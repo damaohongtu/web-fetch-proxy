@@ -1,0 +1,73 @@
+services:
+  fetch-worker:
+    build:
+      context: ./worker
+    restart: unless-stopped
+    environment:
+      LISTEN_ADDR: 0.0.0.0:8080
+      FETCH_AUTH_TOKEN_FILE: /run/secrets/fetch_auth_token
+      DEFAULT_TIMEOUT_MS: ${DEFAULT_TIMEOUT_MS:-30000}
+      MAX_TIMEOUT_MS: ${MAX_TIMEOUT_MS:-60000}
+      CONNECT_TIMEOUT_MS: ${CONNECT_TIMEOUT_MS:-5000}
+      RESPONSE_HEADER_TIMEOUT_MS: ${RESPONSE_HEADER_TIMEOUT_MS:-15000}
+      DEFAULT_MAX_BYTES: ${DEFAULT_MAX_BYTES:-10485760}
+      HARD_MAX_BYTES: ${HARD_MAX_BYTES:-52428800}
+      DEFAULT_MAX_REDIRECTS: ${DEFAULT_MAX_REDIRECTS:-5}
+      HARD_MAX_REDIRECTS: ${HARD_MAX_REDIRECTS:-10}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-100}
+      BLOCKED_CIDRS: ${BLOCKED_CIDRS:-}
+    secrets:
+      - fetch_auth_token
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    depends_on:
+      fetch-worker:
+        condition: service_healthy
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-localhost}
+      # 只替换模板里的 SERVER_NAME，避免 envsubst 改写 Nginx 自身的 $变量。
+      NGINX_ENVSUBST_FILTER: ^SERVER_NAME$
+    ports:
+      - "${PUBLIC_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./certs/ca.crt:/etc/nginx/tls/ca.crt:ro
+      - ./certs/server.crt:/etc/nginx/tls/server.crt:ro
+      - ./certs/server.key:/etc/nginx/tls/server.key:ro
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  fetch_auth_token:
+    file: ./secrets/fetch_auth_token
