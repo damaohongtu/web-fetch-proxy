@@ -1,3 +1,4 @@
+// Package main tests the cloud-side Web Fetch worker.
 package main
 
 import (

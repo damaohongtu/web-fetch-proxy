@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal internal Web-Fetch service and cloud proxy smoke-test client.
+"""Example internal Web-Fetch service and cloud proxy smoke-test client.
 
 Only Python's standard library is required.
 """
@@ -17,6 +17,15 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent.parent
+
+
+def default_artifact(name: str, repository_path: Path) -> str:
+    adjacent = SCRIPT_DIR / name
+    return str(adjacent if adjacent.exists() else repository_path)
 
 
 class CloudFetchClient:
@@ -138,12 +147,12 @@ def read_token(token: str | None, token_file: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Test the cloud Web Fetch proxy through mTLS")
-    parser.add_argument("--endpoint", default=os.environ.get("CLOUD_FETCH_ENDPOINT", "https://localhost:8443/v1/fetch"))
-    parser.add_argument("--ca", default=os.environ.get("CLOUD_FETCH_CA", "certs/ca.crt"))
-    parser.add_argument("--cert", default=os.environ.get("CLOUD_FETCH_CERT", "certs/client.crt"))
-    parser.add_argument("--key", default=os.environ.get("CLOUD_FETCH_KEY", "certs/client.key"))
+    parser.add_argument("--endpoint", default=os.environ.get("CLOUD_FETCH_ENDPOINT", "https://127.0.0.1:8443/v1/fetch"))
+    parser.add_argument("--ca", default=os.environ.get("CLOUD_FETCH_CA", default_artifact("ca.crt", PROJECT_DIR / "var/pki/ca.crt")))
+    parser.add_argument("--cert", default=os.environ.get("CLOUD_FETCH_CERT", default_artifact("client.crt", PROJECT_DIR / "var/pki/client.crt")))
+    parser.add_argument("--key", default=os.environ.get("CLOUD_FETCH_KEY", default_artifact("client.key", PROJECT_DIR / "var/pki/client.key")))
     parser.add_argument("--token", default=None)
-    parser.add_argument("--token-file", default=os.environ.get("CLOUD_FETCH_TOKEN_FILE", "secrets/fetch_auth_token"))
+    parser.add_argument("--token-file", default=os.environ.get("CLOUD_FETCH_TOKEN_FILE", default_artifact("fetch_auth_token", PROJECT_DIR / "var/secrets/fetch_auth_token")))
     parser.add_argument("--timeout", type=float, default=75.0)
 
     commands = parser.add_subparsers(dest="command", required=True)

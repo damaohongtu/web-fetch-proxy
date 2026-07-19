@@ -1,3 +1,4 @@
+// Package main implements the cloud-side Web Fetch worker.
 package main
 
 import (
@@ -17,8 +18,10 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -131,10 +134,28 @@ func main() {
 		MaxHeaderBytes:    16 << 10,
 	}
 
-	s.logger.Info("fetch worker listening", "address", cfg.ListenAddr)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		s.logger.Error("server stopped", "error", err)
-		os.Exit(1)
+	serverError := make(chan error, 1)
+	go func() {
+		s.logger.Info("fetch worker listening", "address", cfg.ListenAddr)
+		serverError <- httpServer.ListenAndServe()
+	}()
+
+	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	select {
+	case err := <-serverError:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Error("server stopped", "error", err)
+			os.Exit(1)
+		}
+	case <-shutdownContext.Done():
+		s.logger.Info("shutdown requested")
+		graceContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(graceContext); err != nil {
+			s.logger.Error("graceful shutdown failed", "error", err)
+			os.Exit(1)
+		}
 	}
 }
 

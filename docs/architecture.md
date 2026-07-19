@@ -12,7 +12,7 @@ Agent
   -> 外部网站
 ```
 
-Nginx 不解析请求中的 URL，也不直接动态代理外部地址。它只把经过 mTLS 验证的请求转发到同一 Docker 私有网络内的 Worker。
+Nginx 不解析请求中的 URL，也不直接动态代理外部地址。它只把经过来源 CIDR 和 mTLS 验证的请求，通过 Docker `backend` 私有网络转发给 Worker。Nginx 连接 `edge + backend` 网络；Worker 连接 `backend + egress` 网络，8080 不发布到宿主机。
 
 ## 2. 各层参数
 
@@ -50,11 +50,11 @@ TLS 参数：
 
 | 参数 | 内容 |
 |---|---|
-| 服务端证书 | `certs/server.crt` |
-| 服务端私钥 | `certs/server.key` |
-| 客户端证书 | 内部服务器持有的 `certs/client.crt` |
-| 客户端私钥 | 内部服务器持有的 `certs/client.key` |
-| 信任 CA | 双方信任 `certs/ca.crt` |
+| 服务端证书 | `var/pki/server.crt` |
+| 服务端私钥 | `var/pki/server.key` |
+| 客户端证书 | 内部服务器持有的 `client.crt` |
+| 客户端私钥 | 内部服务器持有的 `client.key` |
+| 信任 CA | 双方信任 `var/pki/ca.crt` |
 | TLS 版本 | TLS 1.2、TLS 1.3 |
 
 不需要域名。使用公网 IP 访问时，服务端证书的 Subject Alternative Name 必须包含 `IP:<云服务器公网IP>`。只在证书 CN 中填写 IP 不足以通过现代 TLS 客户端的主机身份校验。
@@ -143,10 +143,21 @@ Worker 会拒绝回环、私网、链路本地、CGNAT、多播、保留地址�
 ## 4. 安全边界
 
 1. 云安全组只允许内部服务器固定出口 IP 访问 TCP 443。
-2. Nginx 强制校验客户端证书；没有合法客户端私钥无法完成 TLS 握手。
-3. Bearer Token 是独立的第二层鉴权，存放在 Docker secret 中。
-4. Worker 不发布宿主机端口，只能被 Nginx 通过私有容器网络访问。
-5. Worker 对 DNS 解析结果和真正建立的连接使用同一批经过验证的 IP，降低 DNS 重绑定风险。
-6. `BLOCKED_CIDRS` 必须加入云服务器自身公网 IP，避免 Worker 回连云服务器公开服务。
-7. 生产环境应定期轮换客户端证书和 Token，并为证书配置较短有效期。
-8. URL 查询串可能含敏感信息，默认访问日志只由 Nginx 记录 API 路径；Worker 日志不输出请求正文。
+2. Nginx 的 `ALLOWED_CLIENT_CIDR` 再次限制来源 IP。
+3. Nginx 强制校验客户端证书；没有合法客户端私钥无法通过请求认证。
+4. Bearer Token 是独立的第二层鉴权，存放在 Docker secret 中。
+5. Worker 不发布宿主机端口，只能被 Nginx 通过 `backend` 私有网络访问。
+6. Worker 对 DNS 解析结果和真正建立的连接使用同一批经过验证的 IP，降低 DNS 重绑定风险。
+7. `BLOCKED_CIDRS` 必须加入云服务器自身公网 IP，避免 Worker 回连云服务器公开服务。
+8. 生产环境应定期轮换服务端证书、客户端证书和 Token，并监控到期时间。
+9. URL 查询串可能含敏感信息，默认访问日志只由 Nginx 记录 API 路径；Worker 日志不输出请求正文。
+
+## 5. 代码与部署组件映射
+
+| 层 | 路径 | 启动方式 |
+|---|---|---|
+| Nginx mTLS 网关 | `deploy/nginx/templates/default.conf.template` | Compose 服务 `nginx` |
+| Go Fetch Worker | `services/fetch-worker/` | Compose 服务 `fetch-worker` |
+| 云端统一控制 | `scripts/cloudctl.sh` | `cloudctl.sh start` 明确启动上述两个服务 |
+| 内部测试实现 | `examples/internal-web-fetch/internal_web_fetch.py` | Python 标准库直接运行 |
+| 运行时身份 | `var/pki/`、`var/secrets/` | `cloudctl.sh init` 生成，不入 Git |

@@ -1,7 +1,9 @@
+name: web-fetch-proxy
+
 services:
   fetch-worker:
     build:
-      context: ./worker
+      context: ./services/fetch-worker
     restart: unless-stopped
     environment:
       LISTEN_ADDR: 0.0.0.0:8080
@@ -20,6 +22,9 @@ services:
       - fetch_auth_token
     expose:
       - "8080"
+    networks:
+      - backend
+      - egress
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -31,6 +36,10 @@ services:
       - /tmp:size=16m,mode=1777
     cap_drop:
       - ALL
+    mem_limit: ${WORKER_MEMORY_LIMIT:-512m}
+    cpus: ${WORKER_CPU_LIMIT:-1.0}
+    pids_limit: 128
+    stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
     logging:
@@ -45,24 +54,33 @@ services:
       fetch-worker:
         condition: service_healthy
     environment:
-      SERVER_NAME: ${SERVER_NAME:-localhost}
+      SERVER_NAME: ${SERVER_NAME:-127.0.0.1}
+      ALLOWED_CLIENT_CIDR: ${ALLOWED_CLIENT_CIDR:-0.0.0.0/0}
       # 只替换模板里的 SERVER_NAME，避免 envsubst 改写 Nginx 自身的 $变量。
-      NGINX_ENVSUBST_FILTER: ^SERVER_NAME$
+      NGINX_ENVSUBST_FILTER: ^(SERVER_NAME|ALLOWED_CLIENT_CIDR)$
     ports:
-      - "${PUBLIC_HTTPS_PORT:-8443}:443"
+      # Fail closed when no .env is supplied: local/default Compose runs bind only to loopback.
+      # cloudctl init explicitly writes 0.0.0.0 for a production deployment.
+      - "${PUBLIC_BIND_ADDRESS:-127.0.0.1}:${PUBLIC_HTTPS_PORT:-8443}:443"
+    networks:
+      - edge
+      - backend
     volumes:
-      - ./nginx/templates:/etc/nginx/templates:ro
-      - ./certs/ca.crt:/etc/nginx/tls/ca.crt:ro
-      - ./certs/server.crt:/etc/nginx/tls/server.crt:ro
-      - ./certs/server.key:/etc/nginx/tls/server.key:ro
+      - ./deploy/nginx/templates:/etc/nginx/templates:ro
+      - ./var/pki/ca.crt:/etc/nginx/tls/ca.crt:ro
+      - ./var/pki/server.crt:/etc/nginx/tls/server.crt:ro
+      - ./var/pki/server.key:/etc/nginx/tls/server.key:ro
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
+      test: ["CMD-SHELL", "nginx -t && wget -q -O - http://fetch-worker:8080/healthz | grep -q '\"status\":\"ok\"'"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 5s
     security_opt:
       - no-new-privileges:true
+    mem_limit: ${NGINX_MEMORY_LIMIT:-256m}
+    cpus: ${NGINX_CPU_LIMIT:-0.5}
+    pids_limit: 128
     logging:
       options:
         max-size: "10m"
@@ -70,4 +88,13 @@ services:
 
 secrets:
   fetch_auth_token:
-    file: ./secrets/fetch_auth_token
+    file: ./var/secrets/fetch_auth_token
+
+networks:
+  edge:
+    name: web-fetch-proxy-edge
+  backend:
+    name: web-fetch-proxy-backend
+    internal: true
+  egress:
+    name: web-fetch-proxy-egress

@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+var/pki/*
+var/secrets/*
+var/client-bundle/
+*.log
+.DS_Store
+services/fetch-worker/fetch-worker
+__pycache__/
+*.pyc

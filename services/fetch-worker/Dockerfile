@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM golang:1.24-alpine AS build
 
 WORKDIR /src
@@ -8,8 +9,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fetch-w
 FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates \
-    && addgroup -S fetch \
-    && adduser -S -G fetch -H -s /sbin/nologin fetch
+    && addgroup -S -g 10001 fetch \
+    && adduser -S -u 10001 -G fetch -H -s /sbin/nologin fetch
 
 COPY --from=build /out/fetch-worker /usr/local/bin/fetch-worker
 

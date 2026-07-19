@@ -1,3 +1,4 @@
+# Nginx mTLS edge gateway for the Web Fetch service.
 map $http_x_request_id $effective_request_id {
     default $http_x_request_id;
     ""      $request_id;
@@ -29,6 +30,10 @@ server {
     server_name ${SERVER_NAME};
 
     server_tokens off;
+
+    # mTLS is mandatory; this CIDR allowlist adds a second network boundary.
+    allow ${ALLOWED_CLIENT_CIDR};
+    deny all;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_certificate /etc/nginx/tls/server.crt;
