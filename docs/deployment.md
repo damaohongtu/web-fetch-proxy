@@ -217,6 +217,38 @@ sudo ss -lntp | grep ':443 '
 
 预期两个容器都是 `running (healthy)`，宿主机发布 443，但不发布 8080。
 
+### 7.3 启用宿主机日志保留任务
+
+Compose 将日志写入以下宿主机目录：
+
+```text
+/opt/web-fetch-proxy/var/log/nginx/access.log
+/opt/web-fetch-proxy/var/log/nginx/error.log
+/opt/web-fetch-proxy/var/log/fetch-worker/worker.log
+```
+
+安装每天执行的 systemd timer：
+
+```bash
+sudo install -m 644 deploy/systemd/web-fetch-proxy-log-cleanup.service \
+  /etc/systemd/system/web-fetch-proxy-log-cleanup.service
+sudo install -m 644 deploy/systemd/web-fetch-proxy-log-cleanup.timer \
+  /etc/systemd/system/web-fetch-proxy-log-cleanup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now web-fetch-proxy-log-cleanup.timer
+sudo systemctl list-timers web-fetch-proxy-log-cleanup.timer
+```
+
+定时任务每天移动并压缩当前日志，短暂重新创建 Nginx 和 Worker 以打开新文件，然后删除超过 7×24 小时的归档。手工验证：
+
+```bash
+sudo ./scripts/cleanup-logs.sh 7
+sudo systemctl start web-fetch-proxy-log-cleanup.service
+sudo journalctl -u web-fetch-proxy-log-cleanup.service --since today
+```
+
+systemd 单元默认项目路径为 `/opt/web-fetch-proxy`；部署到其他路径时必须同步修改单元中的 `WorkingDirectory`、`ExecStart` 和 `ConditionPathExists`。
+
 ## 8. 导出并分发内部客户端文件
 
 在云服务器上导出最小客户端包：

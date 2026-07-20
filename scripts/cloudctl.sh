@@ -6,6 +6,7 @@ compose_file="${project_dir}/compose.yaml"
 env_file="${project_dir}/.env"
 pki_dir="${project_dir}/var/pki"
 secret_dir="${project_dir}/var/secrets"
+log_root="${project_dir}/var/log"
 
 usage() {
   printf '%s\n' \
@@ -75,6 +76,16 @@ require_runtime_file() {
   }
 }
 
+prepare_log_directories() {
+  mkdir -p "${log_root}/nginx" "${log_root}/fetch-worker"
+  chmod 750 "${log_root}" "${log_root}/nginx" "${log_root}/fetch-worker"
+  if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" ]]; then
+    chown root:root "${log_root}" "${log_root}/nginx"
+    # Worker runs with the pinned UID/GID from services/fetch-worker/Dockerfile.
+    chown 10001:10001 "${log_root}/fetch-worker"
+  fi
+}
+
 preflight() {
   require_command docker
   require_command openssl
@@ -88,6 +99,7 @@ preflight() {
     printf 'Docker daemon is not running or is not accessible.\n' >&2
     exit 1
   }
+  prepare_log_directories
   load_environment
 
   is_ipv4 "${SERVER_NAME:-}" || {

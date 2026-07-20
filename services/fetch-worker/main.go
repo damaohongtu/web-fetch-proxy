@@ -29,6 +29,7 @@ import (
 type config struct {
 	ListenAddr            string
 	AuthToken             string
+	LogFile               string
 	DefaultTimeout        time.Duration
 	MaxTimeout            time.Duration
 	ConnectTimeout        time.Duration
@@ -119,7 +120,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	s := newServer(cfg)
+	logger, closeLog, err := newApplicationLogger(cfg.LogFile)
+	if err != nil {
+		slog.Error("initialize application logger", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := closeLog(); err != nil {
+			slog.Error("close application log", "error", err)
+		}
+	}()
+
+	s := newServerWithLogger(cfg, logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/fetch", s.fetch)
@@ -160,6 +172,10 @@ func main() {
 }
 
 func newServer(cfg config) *server {
+	return newServerWithLogger(cfg, slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+}
+
+func newServerWithLogger(cfg config, logger *slog.Logger) *server {
 	dialer := &safeDialer{
 		resolver:        net.DefaultResolver,
 		dialer:          &net.Dialer{Timeout: cfg.ConnectTimeout, KeepAlive: 30 * time.Second},
@@ -181,8 +197,20 @@ func newServer(cfg config) *server {
 		cfg:       cfg,
 		transport: transport,
 		sem:       make(chan struct{}, cfg.MaxConcurrency),
-		logger:    slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		logger:    logger,
 	}
+}
+
+func newApplicationLogger(path string) (*slog.Logger, func() error, error) {
+	if strings.TrimSpace(path) == "" {
+		return slog.New(slog.NewJSONHandler(os.Stdout, nil)), func() error { return nil }, nil
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open application log %q: %w", path, err)
+	}
+	output := io.MultiWriter(os.Stdout, file)
+	return slog.New(slog.NewJSONHandler(output, nil)), file.Close, nil
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
@@ -564,6 +592,7 @@ func loadConfig() (config, error) {
 	cfg := config{
 		ListenAddr:            envString("LISTEN_ADDR", "0.0.0.0:8080"),
 		AuthToken:             token,
+		LogFile:               strings.TrimSpace(os.Getenv("LOG_FILE")),
 		DefaultTimeout:        envDurationMS("DEFAULT_TIMEOUT_MS", 30000),
 		MaxTimeout:            envDurationMS("MAX_TIMEOUT_MS", 60000),
 		ConnectTimeout:        envDurationMS("CONNECT_TIMEOUT_MS", 5000),

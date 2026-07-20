@@ -8,6 +8,7 @@ services:
     environment:
       LISTEN_ADDR: 0.0.0.0:8080
       FETCH_AUTH_TOKEN_FILE: /run/secrets/fetch_auth_token
+      LOG_FILE: /var/log/fetch-worker/worker.log
       DEFAULT_TIMEOUT_MS: ${DEFAULT_TIMEOUT_MS:-30000}
       MAX_TIMEOUT_MS: ${MAX_TIMEOUT_MS:-60000}
       CONNECT_TIMEOUT_MS: ${CONNECT_TIMEOUT_MS:-5000}
@@ -20,6 +21,8 @@ services:
       BLOCKED_CIDRS: ${BLOCKED_CIDRS:-}
     secrets:
       - fetch_auth_token
+    volumes:
+      - ./var/log/fetch-worker:/var/log/fetch-worker
     expose:
       - "8080"
     networks:
@@ -70,6 +73,7 @@ services:
       - ./var/pki/ca.crt:/etc/nginx/tls/ca.crt:ro
       - ./var/pki/server.crt:/etc/nginx/tls/server.crt:ro
       - ./var/pki/server.key:/etc/nginx/tls/server.key:ro
+      - ./var/log/nginx:/var/log/nginx
     healthcheck:
       test: ["CMD-SHELL", "nginx -t && wget -q -O - http://fetch-worker:8080/healthz | grep -q '\"status\":\"ok\"'"]
       interval: 10s

@@ -1,0 +1,14 @@
+[Unit]
+Description=Rotate and clean Web Fetch Proxy host logs
+Requires=docker.service
+After=docker.service
+ConditionPathExists=/opt/web-fetch-proxy/compose.yaml
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/web-fetch-proxy
+ExecStart=/opt/web-fetch-proxy/scripts/cleanup-logs.sh 7
+User=root
+Group=root
+Nice=10
+NoNewPrivileges=true

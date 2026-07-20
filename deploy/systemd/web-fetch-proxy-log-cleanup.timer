@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Web Fetch Proxy log retention
+
+[Timer]
+OnCalendar=*-*-* 00:15:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=web-fetch-proxy-log-cleanup.service
+
+[Install]
+WantedBy=timers.target

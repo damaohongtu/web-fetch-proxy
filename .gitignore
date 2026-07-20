@@ -4,6 +4,7 @@
 var/pki/*
 var/secrets/*
 var/client-bundle/
+var/log/*
 *.log
 .DS_Store
 services/fetch-worker/fetch-worker

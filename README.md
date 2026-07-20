@@ -2,11 +2,17 @@
 
 为不能直接访问互联网的内部 Web-Fetch 提供一个经过 mTLS 保护的云端出口。
 
-```text
-Agent -> 内部 Web-Fetch -> 公网 IP:443/mTLS -> Nginx -> Fetch Worker -> 外部网站
+```mermaid
+flowchart LR
+    A["Agent"] --> I["内部 Web-Fetch"]
+    I -->|"公网 IP:443<br/>mTLS + Bearer Token"| N["云端 Nginx"]
+    N -->|"backend 私有网络 :8080"| W["Fetch Worker"]
+    W -->|"校验 DNS/IP 后访问"| T["外部 HTTP/HTTPS 网站"]
 ```
 
 不需要域名。服务端证书使用云服务器公网 IPv4 的 IP SAN。
+
+完整的网络拓扑、认证边界和请求时序见[完整架构图](docs/architecture.md#2-完整架构图)。
 
 ## 云端到底启动什么
 
@@ -70,6 +76,7 @@ python3 examples/internal-web-fetch/internal_web_fetch.py fetch https://www.baid
 ./scripts/cloudctl.sh status
 ./scripts/cloudctl.sh logs nginx
 ./scripts/cloudctl.sh logs fetch-worker
+sudo ./scripts/cleanup-logs.sh 7
 ./scripts/cloudctl.sh restart
 ./scripts/cloudctl.sh rebuild
 ./scripts/cloudctl.sh verify   # 仅本地或允许公网 IP 回环时；生产从内部客户端包执行 smoke-test.sh
@@ -91,6 +98,7 @@ python3 examples/internal-web-fetch/internal_web_fetch.py fetch https://www.baid
 ├── scripts/
 │   ├── cloudctl.sh                      初始化、启停、状态、日志、验收、客户端导出
 │   ├── generate-mtls.sh                 PKI 和 Token 的初始化/独立轮换
+│   ├── cleanup-logs.sh                   宿主机日志轮转、压缩与 7 天清理
 │   └── smoke-test.sh                    mTLS、Token、SSRF、外网端到端验收
 ├── docs/
 │   ├── architecture.md                  架构、接口与安全边界

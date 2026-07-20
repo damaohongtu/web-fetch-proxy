@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +131,24 @@ func TestInvalidJSON(t *testing.T) {
 	}
 	if body.Error.Code != "INVALID_REQUEST" {
 		t.Fatalf("code = %s", body.Error.Code)
+	}
+}
+
+func TestApplicationLoggerWritesMappedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker.log")
+	logger, closeLog, err := newApplicationLogger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.Info("mapped log test", "request_id", "test-request")
+	if err := closeLog(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), `"msg":"mapped log test"`) || !strings.Contains(string(content), `"request_id":"test-request"`) {
+		t.Fatalf("unexpected log content: %s", content)
 	}
 }

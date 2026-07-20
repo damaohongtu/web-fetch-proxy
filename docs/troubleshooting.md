@@ -12,6 +12,16 @@ docker compose --env-file .env -f compose.yaml config
 
 日志中的 `X-Request-ID` 可关联 Nginx 与 Worker 请求。
 
+宿主机持久日志：
+
+```bash
+tail -f var/log/nginx/access.log
+tail -f var/log/nginx/error.log
+tail -f var/log/fetch-worker/worker.log
+```
+
+`cloudctl.sh logs` 查看的是容器 stdout/stderr；宿主机文件用于 7 天留存和日志采集。
+
 ## 常见现象
 
 | 现象 | 常见原因 | 处理 |

@@ -18,7 +18,39 @@
 
 `rebuild` 会访问镜像仓库以更新 Nginx 和 Worker 的基础镜像。受限网络中不要把它当作日常重启命令；先按[部署手册的离线镜像流程](deployment.md#71-准备容器镜像)导入经过批准的新镜像，再执行 `restart`。现有镜像未被删除时，`start` 和 `restart` 不需要访问 Docker Hub。
 
-日志默认由 Docker 输出并限制为每文件 10 MiB、保留 3 个文件。访问日志不记录 Token 或响应正文。
+日志有两条保留路径：
+
+- Docker stdout/stderr 仍限制为每文件 10 MiB、保留 3 个文件，供 `cloudctl.sh logs` 即时排障；
+- 宿主机持久日志位于 `var/log/nginx/` 和 `var/log/fetch-worker/`，供审计、采集和按天保留。
+
+访问日志不记录 Token 或响应正文。Worker 同时写 stdout 与宿主机文件，内容为 JSON；Nginx 访问日志为 JSON，错误日志为文本。
+
+## 日志轮转与 7 天保留
+
+宿主机定时器每天执行：
+
+```bash
+./scripts/cleanup-logs.sh 7
+```
+
+脚本行为：
+
+1. 将 Nginx 和 Worker 活动日志移动为带 UTC 时间戳的归档；
+2. 重新创建 Nginx 和 Worker，使所有进程关闭旧文件并打开新的活动日志；该步骤会造成短暂服务中断；
+3. 使用 gzip 压缩本次归档；
+4. 删除修改时间超过 7×24 小时且名称匹配 `*.log.*` 的归档；
+5. 使用目录锁阻止两个清理进程并发执行。
+
+检查任务和最近执行结果：
+
+```bash
+systemctl status web-fetch-proxy-log-cleanup.timer
+systemctl list-timers web-fetch-proxy-log-cleanup.timer
+journalctl -u web-fetch-proxy-log-cleanup.service --since '7 days ago'
+find var/log -maxdepth 2 -type f -ls
+```
+
+修改保留期时，编辑 systemd service 的 `ExecStart` 参数并执行 `systemctl daemon-reload`。不要对整个 `var/` 目录使用递归删除命令；其中还包含 CA 私钥、服务端私钥和 Token。
 
 ## 修改配置
 
