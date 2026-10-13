@@ -28,12 +28,6 @@ func newLoopbackProxyServer(cfg config) *server {
 	}
 }
 
-func proxyTestConfig(upstreams ...string) config {
-	cfg := testConfig()
-	cfg.AllowedUpstreamHosts = upstreams
-	return cfg
-}
-
 func authorizedProxyRequest(method, target string, body io.Reader) *http.Request {
 	req := httptest.NewRequest(method, target, body)
 	req.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
@@ -76,79 +70,52 @@ func TestParseUpstreamOrigin(t *testing.T) {
 func TestResolveUpstream(t *testing.T) {
 	tests := []struct {
 		name         string
-		upstreams    []string
 		header       string
 		target       string
-		wantErr      string // empty means success
 		wantUpstream string
+		wantErr      string // empty means success
 	}{
 		{
 			name:         "scheme host and path",
-			upstreams:    []string{"mcp.example.com"},
 			header:       "https://MCP.Example.com",
 			target:       "http://fetch-worker/v1/proxy/servers/x",
 			wantUpstream: "https://mcp.example.com/servers/x",
 		},
 		{
 			name:         "bare host defaults to https",
-			upstreams:    []string{"mcp.example.com"},
 			header:       "mcp.example.com",
 			target:       "http://fetch-worker/v1/proxy/",
 			wantUpstream: "https://mcp.example.com/",
 		},
 		{
 			name:         "encoded path and query preserved",
-			upstreams:    []string{"mcp.example.com"},
 			header:       "https://mcp.example.com",
 			target:       "http://fetch-worker/v1/proxy/a%20b/x?a=1&b=2+c",
 			wantUpstream: "https://mcp.example.com/a%20b/x?a=1&b=2+c",
 		},
 		{
-			name:      "host not in allowlist",
-			upstreams: []string{"mcp.example.com"},
-			header:    "https://other.example.com",
-			target:    "http://fetch-worker/v1/proxy/x",
-			wantErr:   "not permitted",
-		},
-		{
-			name:      "empty allowlist rejects everything",
-			upstreams: nil,
-			header:    "https://mcp.example.com",
-			target:    "http://fetch-worker/v1/proxy/x",
-			wantErr:   "not permitted",
-		},
-		{
-			name:      "rejected port",
-			upstreams: []string{"mcp.example.com"},
-			header:    "https://mcp.example.com:8443",
-			target:    "http://fetch-worker/v1/proxy/x",
-			wantErr:   "not permitted",
-		},
-		{
-			name:         "port entry admits that port",
-			upstreams:    []string{"mcp.example.com:8443"},
+			name:         "non-standard port admitted without configuration",
 			header:       "https://mcp.example.com:8443",
 			target:       "http://fetch-worker/v1/proxy/x",
 			wantUpstream: "https://mcp.example.com:8443/x",
 		},
 		{
-			name:      "port entry rejects scheme default port",
-			upstreams: []string{"mcp.example.com:8443"},
-			header:    "https://mcp.example.com",
-			target:    "http://fetch-worker/v1/proxy/x",
-			wantErr:   "not permitted",
+			name:         "arbitrary vendor host admitted",
+			header:       "https://anywhere-vendor.example.net",
+			target:       "http://fetch-worker/v1/proxy/x",
+			wantErr:      "",
+			wantUpstream: "https://anywhere-vendor.example.net/x",
 		},
 		{
-			name:      "missing header",
-			upstreams: []string{"mcp.example.com"},
-			header:    "",
-			target:    "http://fetch-worker/v1/proxy/x",
-			wantErr:   "X-Mcp-Host header is required",
+			name:    "missing header",
+			header:  "",
+			target:  "http://fetch-worker/v1/proxy/x",
+			wantErr: "X-Mcp-Host header is required",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := &server{cfg: config{AllowedUpstreamHosts: test.upstreams}}
+			s := &server{}
 			req := httptest.NewRequest(http.MethodGet, test.target, nil)
 			if test.header != "" {
 				req.Header.Set(upstreamHostHeader, test.header)
@@ -171,7 +138,7 @@ func TestResolveUpstream(t *testing.T) {
 }
 
 func TestProxyRequiresAuthentication(t *testing.T) {
-	s := newLoopbackProxyServer(proxyTestConfig("mcp.example.com"))
+	s := newLoopbackProxyServer(testConfig())
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/x", strings.NewReader("{}"))
 	res := httptest.NewRecorder()
 	s.proxy(res, req)
@@ -181,7 +148,7 @@ func TestProxyRequiresAuthentication(t *testing.T) {
 }
 
 func TestProxyRejectsMissingUpstreamHeader(t *testing.T) {
-	s := newLoopbackProxyServer(proxyTestConfig("mcp.example.com"))
+	s := newLoopbackProxyServer(testConfig())
 	res := httptest.NewRecorder()
 	s.proxy(res, authorizedProxyRequest(http.MethodPost, "/v1/proxy/x", strings.NewReader("{}")))
 	if res.Code != http.StatusBadRequest {
@@ -192,24 +159,10 @@ func TestProxyRejectsMissingUpstreamHeader(t *testing.T) {
 	}
 }
 
-func TestProxyRejectsUpstreamNotInAllowlist(t *testing.T) {
-	s := newLoopbackProxyServer(proxyTestConfig("mcp.example.com"))
-	req := authorizedProxyRequest(http.MethodPost, "/v1/proxy/x", strings.NewReader("{}"))
-	req.Header.Set(upstreamHostHeader, "https://evil.example.com")
-	res := httptest.NewRecorder()
-	s.proxy(res, req)
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", res.Code)
-	}
-	if !strings.Contains(res.Body.String(), "UPSTREAM_NOT_ALLOWED") {
-		t.Fatalf("body = %s", res.Body.String())
-	}
-}
-
 // TestProxyBlocksLoopback proves the safe dialer (SSRF protection) also guards
 // the proxy route, not only /v1/fetch.
 func TestProxyBlocksLoopback(t *testing.T) {
-	cfg := proxyTestConfig("127.0.0.1")
+	cfg := testConfig()
 	s := newServer(cfg) // real safeDialer blocks loopback
 	req := authorizedProxyRequest(http.MethodGet, "/v1/proxy/x", nil)
 	req.Header.Set(upstreamHostHeader, "http://127.0.0.1")
@@ -225,8 +178,7 @@ func TestProxyBlocksLoopback(t *testing.T) {
 
 // startProxyPair runs an httptest upstream plus a downstream server exposing
 // the proxy mux, returning the downstream URL and the upstream origin. The
-// upstream's host:port is appended to the allowlist so its random port is
-// admitted.
+// upstream needs no allowlist entry — any origin is admitted.
 func startProxyPair(t *testing.T, cfg config, upstream http.HandlerFunc) (*httptest.Server, string) {
 	t.Helper()
 	upstreamServer := httptest.NewServer(upstream)
@@ -235,7 +187,6 @@ func startProxyPair(t *testing.T, cfg config, upstream http.HandlerFunc) (*httpt
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.AllowedUpstreamHosts = append(cfg.AllowedUpstreamHosts, upstreamURL.Host)
 	s := newLoopbackProxyServer(cfg)
 	downstream := httptest.NewServer(newProxyMux(s))
 	t.Cleanup(downstream.Close)
@@ -275,7 +226,7 @@ func proxyClientRequest(t *testing.T, method, downstreamURL, upstreamOrigin, pat
 func TestProxyHeaderPolicy(t *testing.T) {
 	var received http.Header
 	var receivedHost string
-	downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, r *http.Request) {
+	downstream, origin := startProxyPair(t, testConfig(), func(w http.ResponseWriter, r *http.Request) {
 		received = r.Header.Clone()
 		receivedHost = r.Host
 		w.WriteHeader(http.StatusOK)
@@ -333,7 +284,7 @@ func TestProxyAcceptEncodingPassthrough(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var seen string
-			downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, r *http.Request) {
+			downstream, origin := startProxyPair(t, testConfig(), func(w http.ResponseWriter, r *http.Request) {
 				seen = r.Header.Get("Accept-Encoding")
 				w.WriteHeader(http.StatusOK)
 			})
@@ -360,7 +311,7 @@ func TestProxyAcceptEncodingPassthrough(t *testing.T) {
 
 func TestProxyVerbatimPassthrough(t *testing.T) {
 	const rpcResult = `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}`
-	downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, r *http.Request) {
+	downstream, origin := startProxyPair(t, testConfig(), func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Mcp-Session-Id", "session-abc")
 		w.WriteHeader(http.StatusOK)
@@ -386,7 +337,7 @@ func TestProxyVerbatimPassthrough(t *testing.T) {
 
 func TestProxyPathAndQueryPassthrough(t *testing.T) {
 	var seenURI string
-	downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, r *http.Request) {
+	downstream, origin := startProxyPair(t, testConfig(), func(w http.ResponseWriter, r *http.Request) {
 		seenURI = r.URL.RequestURI()
 		w.WriteHeader(http.StatusOK)
 	})
@@ -398,7 +349,7 @@ func TestProxyPathAndQueryPassthrough(t *testing.T) {
 }
 
 func TestProxyDeletePassthrough(t *testing.T) {
-	downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, _ *http.Request) {
+	downstream, origin := startProxyPair(t, testConfig(), func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 	res := proxyClientRequest(t, http.MethodDelete, downstream.URL, origin, "/v1/proxy/servers/x", nil)
@@ -408,7 +359,7 @@ func TestProxyDeletePassthrough(t *testing.T) {
 }
 
 func TestProxyMethodNotAllowed(t *testing.T) {
-	downstream, _ := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, _ *http.Request) {
+	downstream, _ := startProxyPair(t, testConfig(), func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	res := proxyClientRequest(t, http.MethodPut, downstream.URL, "http://127.0.0.1", "/v1/proxy/x", nil)
@@ -423,7 +374,7 @@ func TestProxyMethodNotAllowed(t *testing.T) {
 func TestProxySSEStreamFlushes(t *testing.T) {
 	const events = 6
 	const interval = 100 * time.Millisecond
-	downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, _ *http.Request) {
+	downstream, origin := startProxyPair(t, testConfig(), func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
@@ -455,7 +406,7 @@ func TestProxySSEStreamFlushes(t *testing.T) {
 }
 
 func TestProxyStreamByteCap(t *testing.T) {
-	cfg := proxyTestConfig()
+	cfg := testConfig()
 	cfg.ProxyMaxStreamBytes = 16
 	downstream, origin := startProxyPair(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -491,7 +442,7 @@ func TestRewriteUpstreamRedirect(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := proxyTestConfig()
+			cfg := testConfig()
 			cfg.PublicPathPrefix = test.prefix
 			s := newLoopbackProxyServer(cfg)
 			target, err := url.Parse("https://" + test.upstreamHost + "/servers/x")
@@ -509,7 +460,7 @@ func TestRewriteUpstreamRedirect(t *testing.T) {
 }
 
 func TestProxyRedirectLocationRewritten(t *testing.T) {
-	cfg := proxyTestConfig()
+	cfg := testConfig()
 	cfg.PublicPathPrefix = "/ia-access-gateway/mcp"
 	downstream, origin := startProxyPair(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Location", "/servers/x/")
@@ -522,33 +473,12 @@ func TestProxyRedirectLocationRewritten(t *testing.T) {
 }
 
 func TestProxyRequestSizeLimit(t *testing.T) {
-	downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, _ *http.Request) {
+	downstream, origin := startProxyPair(t, testConfig(), func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	res := proxyClientRequest(t, http.MethodPost, downstream.URL, origin, "/v1/proxy/x",
 		bytes.NewReader(make([]byte, proxyRequestBodyLimit+1)))
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.StatusCode)
-	}
-}
-
-func TestLoadConfigUpstreamAllowlist(t *testing.T) {
-	t.Setenv("FETCH_AUTH_TOKEN", strings.Repeat("a", 32))
-	t.Setenv("ALLOWED_UPSTREAM_HOSTS", "MCP.Example.com, vendor.io:8443, bad host")
-	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "bad host") {
-		t.Fatalf("loadConfig() error = %v, want entry rejection for %q", err, "bad host")
-	}
-	t.Setenv("ALLOWED_UPSTREAM_HOSTS", "mcp.example.com,vendor.io:8443, mcp.example.com:9000")
-	cfg, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"mcp.example.com", "vendor.io:8443", "mcp.example.com:9000"}
-	if strings.Join(cfg.AllowedUpstreamHosts, ",") != strings.Join(want, ",") {
-		t.Fatalf("AllowedUpstreamHosts = %v, want %v", cfg.AllowedUpstreamHosts, want)
-	}
-	t.Setenv("ALLOWED_UPSTREAM_HOSTS", "mcp.example.com:notaport")
-	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "port") {
-		t.Fatalf("loadConfig() error = %v, want port rejection", err)
 	}
 }

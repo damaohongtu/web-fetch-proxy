@@ -67,21 +67,20 @@ cp -p .env .env.backup
 
 扩大超时、响应大小或并发前，需要同时评估 Worker 内存、Nginx 超时和外网带宽。
 
-### 启用/调整 MCP 代理
+### 调整 MCP 代理
 
-MCP 代理默认关闭（fail-closed）。启用或调整上游范围：
+MCP 代理默认启用，上游由客户端 `x-mcp-host` 头逐请求指定，任意公网 http/https
+目标均可直达，无需在云端配置上游清单。需要调整的只有：
 
 ```bash
-# .env 中设置（逗号分隔；非标准端口用 host:port）
-ALLOWED_UPSTREAM_HOSTS=mcp-server.comein.cn
-# 网关使用公共前缀时同步设置，用于改写上游 3xx Location
+# 网关使用公共前缀时设置，用于改写上游 3xx Location
 PUBLIC_PATH_PREFIX=/ia-access-gateway/mcp
 ./scripts/cloudctl.sh restart
-./scripts/cloudctl.sh verify      # [6/8]-[8/8] 为 MCP 代理验收
+./scripts/cloudctl.sh verify      # [6/7]-[7/7] 为 MCP 代理验收
 ```
 
-新增上游域名后无需改代码，重启即生效；移除域名即立即拒绝该上游（403
-`UPSTREAM_NOT_ALLOWED`）。验收矩阵见 [部署手册第 10 节](deployment.md#10-完整验收矩阵)，
+上游的私网、回环、元数据与 `BLOCKED_CIDRS` 地址始终被 SSRF 防护拒绝，与
+`/v1/fetch` 同一口径。验收矩阵见 [部署手册第 10 节](deployment.md#10-完整验收矩阵)，
 本地联调可用 `examples/ia-access-gateway/` 的网关模拟器。
 
 ## 应用升级与回滚

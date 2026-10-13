@@ -41,7 +41,6 @@ type config struct {
 	MaxConcurrency        int
 	BlockedPrefixes       []netip.Prefix
 	ProxyListenAddr       string
-	AllowedUpstreamHosts  []string
 	ProxyMaxConcurrency   int
 	ProxyMaxStreamBytes   int64
 	PublicPathPrefix      string
@@ -172,8 +171,7 @@ func main() {
 		serverError <- httpServer.ListenAndServe()
 	}()
 	go func() {
-		s.logger.Info("proxy worker listening",
-			"address", cfg.ProxyListenAddr, "allowed_upstreams", len(cfg.AllowedUpstreamHosts))
+		s.logger.Info("proxy worker listening", "address", cfg.ProxyListenAddr)
 		serverError <- proxyServer.ListenAndServe()
 	}()
 
@@ -652,22 +650,6 @@ func loadConfig() (config, error) {
 	}
 	if cfg.ProxyMaxStreamBytes < 0 {
 		return config{}, errors.New("PROXY_MAX_STREAM_BYTES must not be negative")
-	}
-	if raw := strings.TrimSpace(os.Getenv("ALLOWED_UPSTREAM_HOSTS")); raw != "" {
-		for _, value := range strings.Split(raw, ",") {
-			entry := strings.ToLower(strings.TrimSpace(value))
-			host, port, hasPort := strings.Cut(entry, ":")
-			if host == "" || strings.ContainsAny(host, ":/?#@ ") {
-				return config{}, fmt.Errorf("invalid ALLOWED_UPSTREAM_HOSTS entry %q: expected a hostname such as mcp-server.comein.cn, optionally with :port", value)
-			}
-			if hasPort {
-				portNum, convErr := strconv.Atoi(port)
-				if convErr != nil || portNum < 1 || portNum > 65535 {
-					return config{}, fmt.Errorf("invalid ALLOWED_UPSTREAM_HOSTS entry %q: port must be between 1 and 65535", value)
-				}
-			}
-			cfg.AllowedUpstreamHosts = append(cfg.AllowedUpstreamHosts, entry)
-		}
 	}
 	if raw := strings.TrimSpace(os.Getenv("BLOCKED_CIDRS")); raw != "" {
 		for _, value := range strings.Split(raw, ",") {

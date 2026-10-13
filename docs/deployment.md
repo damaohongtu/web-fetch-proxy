@@ -95,7 +95,7 @@ deploy/nginx/
 
 `init` 只做初始化，不启动任何容器：
 
-1. 创建 `.env`；
+1. 创建 `.env`（含 MCP 透明代理配置项，代理默认启用、无需配置上游）；
 2. 创建私有 CA；
 3. 签发包含公网 IP SAN 的服务端证书；
 4. 签发内部 Web-Fetch 客户端证书；
@@ -139,6 +139,9 @@ PUBLIC_BIND_ADDRESS=0.0.0.0
 SERVER_NAME=203.0.113.20
 ALLOWED_CLIENT_CIDR=198.51.100.10/32
 BLOCKED_CIDRS=203.0.113.20/32
+PROXY_MAX_CONCURRENCY=50
+PROXY_MAX_STREAM_BYTES=104857600
+PUBLIC_PATH_PREFIX=
 ```
 
 含义：
@@ -148,6 +151,8 @@ BLOCKED_CIDRS=203.0.113.20/32
 - `BLOCKED_CIDRS`：Worker 禁止访问的额外地址，必须包含云服务器自身公网 IP。
 - `PUBLIC_BIND_ADDRESS`：生产使用 `0.0.0.0`，本地开发可用 `127.0.0.1`。
 - `PUBLIC_HTTPS_PORT`：宿主机发布端口，生产固定为 443。
+- `PROXY_MAX_CONCURRENCY`、`PROXY_MAX_STREAM_BYTES`：代理并发上限与响应流总量上限。MCP 代理默认启用，上游由 `x-mcp-host` 头逐请求指定，任意公网目标均可直达（私网/回环/元数据地址仍被 SSRF 防护拒绝）。
+- `PUBLIC_PATH_PREFIX`：内部网关使用公共前缀（如 `/ia-access-gateway/mcp`）时配置，用于改写上游 3xx `Location`，须与网关前缀一致。
 - `DEFAULT_*`、`MAX_*`：请求默认值和服务端硬上限。
 - `*_MEMORY_LIMIT`、`*_CPU_LIMIT`：容器资源上限。
 
@@ -215,7 +220,7 @@ docker compose --env-file .env -f compose.yaml ps
 sudo ss -lntp | grep ':443 '
 ```
 
-预期两个容器都是 `running (healthy)`，宿主机发布 443，但不发布 8080。
+预期两个容器都是 `running (healthy)`，宿主机发布 443，但不发布 8080/8081（两者仅在 Docker 内部网络可达）。
 
 ### 7.3 启用宿主机日志保留任务
 
@@ -346,11 +351,7 @@ Python 示例只使用标准库，不需要安装代理工具或第三方 Python
 4. 访问 `127.0.0.1` 的 SSRF 请求返回 403；
 5. 合法公网 HTTPS 抓取返回 200；
 6. MCP 代理缺 `x-mcp-host` 返回 400；
-7. MCP 代理上游不在 allowlist 返回 403；
-8. MCP 代理对 allowlist 内目标透明转发（原始响应体，非 JSON 信封）。
-
-第 8 步要求云端 `.env` 的 `ALLOWED_UPSTREAM_HOSTS` 包含验收 URL 的域名（默认
-`www.baidu.com`），否则该步显示 SKIPPED。
+7. MCP 代理对任意公网 HTTPS 目标透明转发（原始响应体，非 JSON 信封）。
 
 `cloudctl.sh verify` 也会调用同一验收脚本，但它只适用于本地测试，或云服务器自身公网回环流量也落在 `ALLOWED_CLIENT_CIDR` 的环境。生产验收以内部服务器执行客户端包中的 `smoke-test.sh` 为准；云端容器状态通过 `cloudctl.sh status` 检查。
 

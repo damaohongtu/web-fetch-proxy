@@ -273,7 +273,7 @@ flowchart LR
     end
     subgraph CLOUD2["云服务器 web-fetch-proxy"]
         NGINX2["Nginx /v1/proxy/<br/>不缓冲、3600s 读超时"]
-        WORKER2["Worker :8081<br/>x-mcp-host 路由<br/>allowlist + SSRF 防护"]
+        WORKER2["Worker :8081<br/>x-mcp-host 路由<br/>任意公网上游 + SSRF 防护"]
     end
     UPSTREAM["外部 MCP 服务器<br/>mcp-server.comein.cn"]
 
@@ -294,9 +294,9 @@ flowchart LR
   （如 `https://mcp-server.comein.cn`；裸域名默认 https）
 - 公共路径前缀之后的部分原样映射：`<网关>/ia-access-gateway/mcp/<path>` → `<上游>/<path>`
 - Worker 消费该头后剥离，**绝不转发给上游**
-- 上游必须命中云端 allowlist（`ALLOWED_UPSTREAM_HOSTS`，逗号分隔；条目为裸域名
-  `mcp-server.comein.cn` 或 `host:port`）。裸域名条目只放行 80/443 端口；
-  allowlist 为空 = 代理功能整体关闭（fail-closed）
+- **任意公网 http/https origin 均可直达**：MCP 地址来自各供应商，无法预先枚举，
+  因此不设上游 allowlist；上游安全由 SSRF 防护（safeDialer）兜底，私网、回环、
+  元数据和 `BLOCKED_CIDRS` 地址一律拒绝
 
 ### 7.3 头部策略
 
@@ -335,7 +335,8 @@ Worker 的代理 Transport 已关闭自动 gzip——客户端没发 `Accept-Enc
 
 在 `/v1/fetch` 已有边界之上：
 
-1. 上游 allowlist fail-closed：未配置 `ALLOWED_UPSTREAM_HOSTS` 时代理路由整体 403。
+1. 任意公网上游：不设 allowlist，`x-mcp-host` 指定的任何公网 http/https origin
+   都可直达（口径与 `/v1/fetch` 一致——同一批已认证调用方本就能抓取任意 URL）。
 2. `x-mcp-host` 仅接受 http/https origin，禁止 userinfo、路径、查询与 scheme 之外的一切内容。
 3. 出站连接复用 safeDialer：DNS 解析 → IP 校验（私网/回环/元数据/保留段拒绝）→ 用已验证 IP 建连，防 DNS 重绑定。
 4. 代理请求体上限 64 KiB；响应流总量上限 `PROXY_MAX_STREAM_BYTES`（默认 100 MiB，超限断流并告警）。
@@ -347,7 +348,6 @@ Worker 的代理 Transport 已关闭自动 gzip——客户端没发 `Accept-Enc
 |---:|---|---|
 | 400 | `INVALID_REQUEST` | 缺 `x-mcp-host`、头值不合法或请求体超限 |
 | 401 | `UNAUTHORIZED` | 云端 Bearer Token 缺失或错误 |
-| 403 | `UPSTREAM_NOT_ALLOWED` | 上游不在 `ALLOWED_UPSTREAM_HOSTS`（含 allowlist 为空） |
 | 403 | `DESTINATION_BLOCKED` | 上游地址被 SSRF 策略阻止 |
 | 405 | `METHOD_NOT_ALLOWED` | 非 GET/POST/DELETE |
 | 429 | `TOO_MANY_REQUESTS` | 代理并发达到上限 |
@@ -374,9 +374,9 @@ Worker 的代理 Transport 已关闭自动 gzip——客户端没发 `Accept-Enc
 
 ### 7.8 启用流程
 
-1. 云端 `.env` 设置 `ALLOWED_UPSTREAM_HOSTS=mcp-server.comein.cn`（按需追加 `host:port` 条目）
-2. 网关使用公共前缀时同步设置 `PUBLIC_PATH_PREFIX=/ia-access-gateway/mcp`
-3. `./scripts/cloudctl.sh restart`
-4. `./scripts/cloudctl.sh verify` 跑通含 MCP 代理的 8 步验收
-5. 网关团队按 7.4 清单配置后，用 `examples/ia-access-gateway/mcp_client_test.py`
+1. 代理默认启用，无需任何上游配置；网关使用公共前缀时设置
+   `PUBLIC_PATH_PREFIX=/ia-access-gateway/mcp`
+2. `./scripts/cloudctl.sh restart`
+3. `./scripts/cloudctl.sh verify` 跑通含 MCP 代理的 7 步验收
+4. 网关团队按 7.4 清单配置后，用 `examples/ia-access-gateway/mcp_client_test.py`
    （改 `GATEWAY_HOST`/`GATEWAY_PORT` 指向真实网关）做生产联调

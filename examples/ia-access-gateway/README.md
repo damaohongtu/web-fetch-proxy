@@ -8,7 +8,7 @@ MCP 客户端（扮演生产服务器）                examples/ia-access-gatew
   ↓ http://127.0.0.1:8088/ia-access-gateway/mcp/<path>
 网关模拟器（剥前缀、注入 Bearer + mTLS）     examples/ia-access-gateway/gateway_sim.py
   ↓ https://127.0.0.1:8443/v1/proxy/<path>
-云端 web-fetch-proxy（mTLS + Bearer + allowlist + SSRF 防护）
+云端 web-fetch-proxy（mTLS + Bearer + SSRF 防护）
   ↓ https://mcp-server.comein.cn/<path>
 真实 MCP 上游（由 x-mcp-host 头指定）
 ```
@@ -22,12 +22,8 @@ MCP 客户端（扮演生产服务器）                examples/ia-access-gatew
 
 ## 运行
 
-前置条件：本地栈已启动（`./scripts/cloudctl.sh start`），且 `.env` 中的
-`ALLOWED_UPSTREAM_HOSTS` 包含目标 MCP 域名，例如：
-
-```
-ALLOWED_UPSTREAM_HOSTS=mcp-server.comein.cn,www.baidu.com
-```
+前置条件：本地栈已启动（`./scripts/cloudctl.sh start`）。上游由 `x-mcp-host`
+头指定，任意公网 MCP 域名均可直达，无需额外配置。
 
 ```bash
 # 终端 1：启动网关模拟器（默认监听 127.0.0.1:8088，转发到本机 8443）

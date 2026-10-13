@@ -39,7 +39,6 @@ tail -f var/log/fetch-worker/worker.log
 | HTTP 504 `FETCH_TIMEOUT` | 目标过慢或超时上限太低 | 检查目标和带宽，谨慎调整超时 |
 | 返回 `truncated: true` | 响应超过 `max_bytes` | 确认业务确有需要后提高限制和内存预算 |
 | Nginx healthy、请求仍失败 | 容器健康仅证明配置和 Worker健康路径 | 从内部服务器执行完整 mTLS 验收 |
-| MCP 代理 403 `UPSTREAM_NOT_ALLOWED` | 上游不在云端 `ALLOWED_UPSTREAM_HOSTS`，或 allowlist 为空（功能关闭） | 云端 `.env` 加入上游域名后 `cloudctl.sh restart` |
 | MCP 代理 400 `INVALID_REQUEST` | 缺 `x-mcp-host` 头，或值含路径/查询/userinfo | 客户端配置改为 origin 形式，如 `https://mcp-server.comein.cn` |
 | MCP 代理 401 `UNAUTHORIZED` | 云端 Bearer Token 缺失或错误（网关未注入） | 网关注入云端 Token；供应商自己的 Token 走 `Authorization`，由网关改名透传，不受此项影响 |
 | 上游返回 401 | 网关未把客户端 `Authorization` 改名为 `X-Upstream-Authorization`（改写规则见架构文档 7.4），或上游 Token 失效 | 网关实现凭证改写规则；确认供应商 Token 有效 |

@@ -11,7 +11,7 @@ flowchart LR
     W -->|"校验 DNS/IP 后访问"| T["外部 HTTP/HTTPS 网站"]
     M["MCP 客户端<br/>（生产服务器）"] --> G["ia-access-gateway<br/>（企业内部网关）"]
     G -->|"公网 IP:443<br/>/v1/proxy/ + x-mcp-host"| N
-    W2["Fetch Worker :8081<br/>透明代理"] -->|"allowlist + SSRF 防护"| U["外部 MCP 服务器<br/>（SSE 流式回传）"]
+    W2["Fetch Worker :8081<br/>透明代理"] -->|"任意公网上游 + SSRF 防护"| U["外部 MCP 服务器<br/>（SSE 流式回传）"]
 ```
 
 不需要域名。服务端证书使用云服务器公网 IPv4 的 IP SAN。

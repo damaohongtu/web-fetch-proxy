@@ -3,7 +3,7 @@
 
 链路：本脚本(扮演生产服务器上的 MCP 客户端)
         → gateway_sim.py (http://127.0.0.1:8088/ia-access-gateway/mcp/)
-        → 云端 web-fetch-proxy (/v1/proxy/, mTLS + Bearer + allowlist)
+        → 云端 web-fetch-proxy (/v1/proxy/, mTLS + Bearer, 任意公网上游)
         → https://mcp-server.comein.cn/mcp-servers/institutioncenter
 
 执行 initialize → notifications/initialized → tools/list → SSE GET → DELETE，

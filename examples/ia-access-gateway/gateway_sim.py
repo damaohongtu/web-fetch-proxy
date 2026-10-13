@@ -171,7 +171,7 @@ def main():
     print("ia-access-gateway simulator listening on http://%s:%d%s/"
           % (LISTEN_HOST, LISTEN_PORT, GATEWAY_PREFIX))
     print("forwarding to https://%s:%d/v1/proxy/ (mTLS + Bearer)" % (CLOUD_HOST, CLOUD_PORT))
-    print("upstream allowlist lives in the cloud .env (ALLOWED_UPSTREAM_HOSTS)")
+    print("any public http/https upstream is admitted; x-mcp-host selects it per request")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

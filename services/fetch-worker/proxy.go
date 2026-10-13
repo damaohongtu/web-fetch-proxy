@@ -34,12 +34,6 @@ func newProxyMux(s *server) *http.ServeMux {
 	return mux
 }
 
-type upstreamNotAllowedError struct{ host string }
-
-func (e *upstreamNotAllowedError) Error() string {
-	return fmt.Sprintf("upstream host %q is not permitted by ALLOWED_UPSTREAM_HOSTS", e.host)
-}
-
 func (s *server) proxy(w http.ResponseWriter, r *http.Request) {
 	requestID := r.Header.Get("X-Request-ID")
 	if requestID == "" {
@@ -66,14 +60,10 @@ func (s *server) proxy(w http.ResponseWriter, r *http.Request) {
 
 	target, err := s.resolveUpstream(r)
 	if err != nil {
-		var notAllowed *upstreamNotAllowedError
 		var secErr *securityError
-		switch {
-		case errors.As(err, &notAllowed):
-			writeAPIError(w, http.StatusForbidden, "UPSTREAM_NOT_ALLOWED", notAllowed.Error())
-		case errors.As(err, &secErr):
+		if errors.As(err, &secErr) {
 			writeAPIError(w, http.StatusForbidden, "DESTINATION_BLOCKED", secErr.Error())
-		default:
+		} else {
 			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		}
 		return
@@ -93,7 +83,10 @@ func (s *server) proxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveUpstream derives the outbound URL from the X-Mcp-Host header and the
-// inbound path, keeping the query string and any percent-encoding intact.
+// inbound path, keeping the query string and any percent-encoding intact. Any
+// public http/https origin is admitted — MCP endpoints come from arbitrary
+// vendors and cannot be enumerated — while the safe dialer still refuses
+// private, loopback, metadata and otherwise blocked destinations.
 func (s *server) resolveUpstream(r *http.Request) (*url.URL, error) {
 	value := strings.TrimSpace(r.Header.Get(upstreamHostHeader))
 	if value == "" {
@@ -101,9 +94,6 @@ func (s *server) resolveUpstream(r *http.Request) (*url.URL, error) {
 	}
 	origin, err := parseUpstreamOrigin(value)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.checkUpstreamAllowed(origin); err != nil {
 		return nil, err
 	}
 
@@ -119,37 +109,6 @@ func (s *server) resolveUpstream(r *http.Request) (*url.URL, error) {
 		target.RawPath = ""
 	}
 	return &target, nil
-}
-
-// checkUpstreamAllowed matches the origin against ALLOWED_UPSTREAM_HOSTS. A
-// bare-host entry only admits ports 80 and 443; a "host:port" entry admits
-// exactly that port, for upstreams served on non-standard ports.
-func (s *server) checkUpstreamAllowed(origin *url.URL) error {
-	hostname := strings.ToLower(origin.Hostname())
-	port := origin.Port()
-	for _, entry := range s.cfg.AllowedUpstreamHosts {
-		entryHost, entryPort, hasPort := strings.Cut(entry, ":")
-		if entryHost != hostname {
-			continue
-		}
-		if hasPort {
-			if entryPort == port || (port == "" && entryPort == defaultPort(origin.Scheme)) {
-				return nil
-			}
-			continue
-		}
-		if port == "" || port == "80" || port == "443" {
-			return nil
-		}
-	}
-	return &upstreamNotAllowedError{host: origin.Host}
-}
-
-func defaultPort(scheme string) string {
-	if scheme == "https" {
-		return "443"
-	}
-	return "80"
 }
 
 func parseUpstreamOrigin(value string) (*url.URL, error) {
