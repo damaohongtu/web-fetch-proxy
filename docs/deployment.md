@@ -344,9 +344,19 @@ Python 示例只使用标准库，不需要安装代理工具或第三方 Python
 2. 正确 mTLS 可以经 Nginx 到达 Worker；
 3. 错误 Token 返回 401；
 4. 访问 `127.0.0.1` 的 SSRF 请求返回 403；
-5. 合法公网 HTTPS 抓取返回 200。
+5. 合法公网 HTTPS 抓取返回 200；
+6. MCP 代理缺 `x-mcp-host` 返回 400；
+7. MCP 代理上游不在 allowlist 返回 403；
+8. MCP 代理对 allowlist 内目标透明转发（原始响应体，非 JSON 信封）。
+
+第 8 步要求云端 `.env` 的 `ALLOWED_UPSTREAM_HOSTS` 包含验收 URL 的域名（默认
+`www.baidu.com`），否则该步显示 SKIPPED。
 
 `cloudctl.sh verify` 也会调用同一验收脚本，但它只适用于本地测试，或云服务器自身公网回环流量也落在 `ALLOWED_CLIENT_CIDR` 的环境。生产验收以内部服务器执行客户端包中的 `smoke-test.sh` 为准；云端容器状态通过 `cloudctl.sh status` 检查。
+
+MCP 代理的网关侧验收（网关团队配置 ia-access-gateway 后）参考
+`examples/ia-access-gateway/`：把 `mcp_client_test.py` 的 `GATEWAY_HOST`/`GATEWAY_PORT`
+指向真实网关即可复用同一套 initialize → tools/list → SSE → DELETE 测试。
 
 - curl脚本
 ```shell
@@ -359,6 +369,18 @@ curl --cacert ca.crt \
   -H "Authorization: Bearer $(tr -d '\r\n' < fetch_auth_token)" \
   -d '{"url":"https://www.baidu.com/","max_bytes":1048576}' \
   https://8.134.83.141/v1/fetch
+
+# MCP 透明代理（原始响应体直接回传，非 JSON 信封）
+curl --cacert ca.crt \
+  --cert client.crt \
+  --key client.key \
+  -H "Authorization: Bearer $(tr -d '\r\n' < fetch_auth_token)" \
+  -H 'x-mcp-host: https://mcp-server.comein.cn' \
+  -H 'x-user-id: <comein业务用户ID>' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}' \
+  https://8.134.83.141/v1/proxy/mcp-servers/institutioncenter
 ```
 
 

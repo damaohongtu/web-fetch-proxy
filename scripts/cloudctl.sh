@@ -58,6 +58,23 @@ is_ipv4_cidr() {
   [[ "${prefix}" =~ ^[0-9]+$ ]] && (( prefix >= 0 && prefix <= 32 ))
 }
 
+# Each entry is a bare hostname (mcp-server.comein.cn) or host:port.
+is_upstream_entry() {
+  local value="$1"
+  local host port
+  if [[ "${value}" == *:* ]]; then
+    host="${value%%:*}"
+    port="${value#*:}"
+  else
+    host="${value}"
+    port=""
+  fi
+  [[ "${host}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || return 1
+  if [[ -n "${port}" ]]; then
+    [[ "${port}" =~ ^[0-9]+$ ]] && (( 10#${port} >= 1 && 10#${port} <= 65535 )) || return 1
+  fi
+}
+
 load_environment() {
   [[ -s "${env_file}" ]] || {
     printf 'Missing %s. Run: %s init <cloud-public-ip> <internal-egress-cidr>\n' "${env_file}" "$0" >&2
@@ -129,6 +146,21 @@ preflight() {
       exit 1
       ;;
   esac
+  if [[ -n "${ALLOWED_UPSTREAM_HOSTS:-}" ]]; then
+    while IFS= read -r entry; do
+      [[ -n "${entry}" ]] || continue
+      is_upstream_entry "${entry}" || {
+        printf 'Invalid ALLOWED_UPSTREAM_HOSTS entry %q: expected a hostname such as mcp-server.comein.cn, optionally with :port.\n' "${entry}" >&2
+        exit 1
+      }
+    done < <(tr ',' '\n' <<< "${ALLOWED_UPSTREAM_HOSTS}")
+  fi
+  if [[ -n "${PUBLIC_PATH_PREFIX:-}" ]]; then
+    [[ "${PUBLIC_PATH_PREFIX}" == /* ]] || {
+      printf 'PUBLIC_PATH_PREFIX must start with a slash, for example /ia-access-gateway/mcp.\n' >&2
+      exit 1
+    }
+  fi
 
   require_runtime_file "${pki_dir}/ca.crt"
   require_runtime_file "${pki_dir}/server.crt"
@@ -224,6 +256,8 @@ init_deployment() {
     printf 'CONNECT_TIMEOUT_MS=5000\nRESPONSE_HEADER_TIMEOUT_MS=15000\n'
     printf 'DEFAULT_MAX_BYTES=10485760\nHARD_MAX_BYTES=52428800\n'
     printf 'DEFAULT_MAX_REDIRECTS=5\nHARD_MAX_REDIRECTS=10\nMAX_CONCURRENCY=100\n'
+    printf 'ALLOWED_UPSTREAM_HOSTS=\nPROXY_MAX_CONCURRENCY=50\n'
+    printf 'PROXY_MAX_STREAM_BYTES=104857600\nPUBLIC_PATH_PREFIX=\n'
     printf 'WORKER_MEMORY_LIMIT=512m\nWORKER_CPU_LIMIT=1.0\n'
     printf 'NGINX_MEMORY_LIMIT=256m\nNGINX_CPU_LIMIT=0.5\n'
   } > "${env_new}"

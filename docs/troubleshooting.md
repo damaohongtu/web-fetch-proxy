@@ -39,6 +39,28 @@ tail -f var/log/fetch-worker/worker.log
 | HTTP 504 `FETCH_TIMEOUT` | 目标过慢或超时上限太低 | 检查目标和带宽，谨慎调整超时 |
 | 返回 `truncated: true` | 响应超过 `max_bytes` | 确认业务确有需要后提高限制和内存预算 |
 | Nginx healthy、请求仍失败 | 容器健康仅证明配置和 Worker健康路径 | 从内部服务器执行完整 mTLS 验收 |
+| MCP 代理 403 `UPSTREAM_NOT_ALLOWED` | 上游不在云端 `ALLOWED_UPSTREAM_HOSTS`，或 allowlist 为空（功能关闭） | 云端 `.env` 加入上游域名后 `cloudctl.sh restart` |
+| MCP 代理 400 `INVALID_REQUEST` | 缺 `x-mcp-host` 头，或值含路径/查询/userinfo | 客户端配置改为 origin 形式，如 `https://mcp-server.comein.cn` |
+| MCP 代理 401 `UNAUTHORIZED` | 云端 Bearer Token 缺失或错误（网关未注入） | 网关注入云端 Token；供应商自己的 Token 走 `Authorization`，由网关改名透传，不受此项影响 |
+| 上游返回 401 | 网关未把客户端 `Authorization` 改名为 `X-Upstream-Authorization`（改写规则见架构文档 7.4），或上游 Token 失效 | 网关实现凭证改写规则；确认供应商 Token 有效 |
+| MCP 429 `TOO_MANY_REQUESTS` | 代理并发达到 `PROXY_MAX_CONCURRENCY` | 网关侧按用户维度收敛并发，或云端提高上限 |
+| SSE 流中途断开 | 某一跳缓冲或短超时掐流 | 见下节"SSE 断流排查" |
+| MCP 客户端 307 重定向后 404 | 上游尾斜杠重定向丢了公共前缀 | 云端设置 `PUBLIC_PATH_PREFIX` 并重启；确认网关透传 `Location` |
+
+## SSE 断流排查
+
+MCP streamable-http 的 SSE 长连接被掐断时，按链路逐跳定位（从前到后）：
+
+1. **内部网关（ia-access-gateway）**：是否关闭了响应缓冲与压缩？读超时是否 ≥ 3600s？
+   是否有"读超时后自动重试"把 POST 重发给了无状态上游？
+2. **云端 Nginx `/v1/proxy/`**：`proxy_buffering off`、`gzip off`、`proxy_read_timeout 3600s`
+   三项缺一不可；用 `docker compose exec nginx nginx -T` 核对生成配置。
+3. **云端 Worker :8081**：`PROXY_MAX_STREAM_BYTES` 是否过小（超限会主动断流，
+   Worker 日志有 `proxy stream exceeded the configured byte cap`）；
+   `PROXY_MAX_CONCURRENCY` 是否打满（429 会直接拒绝）。
+
+Worker 完成日志按 `request_id` 关联：`proxy completed` 一条含 upstream_host、
+status、bytes、elapsed_ms。Nginx 访问日志的 `mcp_upstream` 字段可直接按上游域名区分流量。
 
 ## 容器无法启动
 

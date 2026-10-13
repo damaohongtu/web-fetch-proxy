@@ -6,6 +6,10 @@ map $http_x_request_id $effective_request_id {
 
 limit_req_zone $binary_remote_addr zone=fetch_rate:10m rate=10r/s;
 limit_conn_zone $binary_remote_addr zone=fetch_conn:10m;
+# The MCP proxy client is typically a single gateway IP aggregating many user
+# sessions, so its limits are deliberately far looser than /v1/fetch.
+limit_req_zone $binary_remote_addr zone=proxy_rate:10m rate=100r/s;
+limit_conn_zone $binary_remote_addr zone=proxy_conn:10m;
 
 log_format fetch_json escape=json
     '{"time":"$time_iso8601",'
@@ -18,11 +22,17 @@ log_format fetch_json escape=json
     '"request_length":$request_length,'
     '"bytes_sent":$bytes_sent,'
     '"request_time":$request_time,'
+    '"mcp_upstream":"$http_x_mcp_host",'
     '"upstream_time":"$upstream_response_time"}';
 
 upstream fetch_worker {
     server fetch-worker:8080;
     keepalive 32;
+}
+
+upstream fetch_worker_proxy {
+    server fetch-worker:8081;
+    keepalive 64;
 }
 
 server {
@@ -92,6 +102,36 @@ server {
 
         proxy_buffering on;
         proxy_pass http://fetch_worker;
+    }
+
+    # MCP streamable-http transparent proxy: SSE responses must not be
+    # buffered, compressed or cut by a short read timeout.
+    location /v1/proxy/ {
+        limit_except GET POST DELETE {
+            deny all;
+        }
+
+        limit_req zone=proxy_rate burst=200 nodelay;
+        limit_conn proxy_conn 200;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host fetch-worker;
+
+        proxy_set_header X-Request-ID $effective_request_id;
+        proxy_set_header X-Client-IP $remote_addr;
+        proxy_set_header X-Client-Cert-Subject $ssl_client_s_dn;
+        proxy_set_header X-Forwarded-For $remote_addr;
+
+        proxy_connect_timeout 3s;
+        proxy_send_timeout 300s;
+        # Idle SSE streams are cut here rather than in the worker.
+        proxy_read_timeout 3600s;
+
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_pass http://fetch_worker_proxy;
     }
 
     location / {

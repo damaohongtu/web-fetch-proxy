@@ -40,6 +40,11 @@ type config struct {
 	HardMaxRedirects      int
 	MaxConcurrency        int
 	BlockedPrefixes       []netip.Prefix
+	ProxyListenAddr       string
+	AllowedUpstreamHosts  []string
+	ProxyMaxConcurrency   int
+	ProxyMaxStreamBytes   int64
+	PublicPathPrefix      string
 }
 
 type fetchRequest struct {
@@ -89,6 +94,7 @@ type server struct {
 	cfg       config
 	transport *http.Transport
 	sem       chan struct{}
+	proxySem  chan struct{}
 	logger    *slog.Logger
 }
 
@@ -136,6 +142,8 @@ func main() {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/fetch", s.fetch)
 
+	proxyMux := newProxyMux(s)
+
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           mux,
@@ -145,11 +153,27 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
+	// The proxy listener serves long-lived SSE streams, so it must not carry
+	// the fetch server's WriteTimeout. Idle streams are cut by Nginx's
+	// proxy_read_timeout instead.
+	proxyServer := &http.Server{
+		Addr:              cfg.ProxyListenAddr,
+		Handler:           proxyMux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       75 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
 
-	serverError := make(chan error, 1)
+	serverError := make(chan error, 2)
 	go func() {
 		s.logger.Info("fetch worker listening", "address", cfg.ListenAddr)
 		serverError <- httpServer.ListenAndServe()
+	}()
+	go func() {
+		s.logger.Info("proxy worker listening",
+			"address", cfg.ProxyListenAddr, "allowed_upstreams", len(cfg.AllowedUpstreamHosts))
+		serverError <- proxyServer.ListenAndServe()
 	}()
 
 	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -165,6 +189,10 @@ func main() {
 		graceContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(graceContext); err != nil {
+			s.logger.Error("graceful shutdown failed", "error", err)
+			os.Exit(1)
+		}
+		if err := proxyServer.Shutdown(graceContext); err != nil {
 			s.logger.Error("graceful shutdown failed", "error", err)
 			os.Exit(1)
 		}
@@ -197,6 +225,7 @@ func newServerWithLogger(cfg config, logger *slog.Logger) *server {
 		cfg:       cfg,
 		transport: transport,
 		sem:       make(chan struct{}, cfg.MaxConcurrency),
+		proxySem:  make(chan struct{}, cfg.ProxyMaxConcurrency),
 		logger:    logger,
 	}
 }
@@ -602,6 +631,10 @@ func loadConfig() (config, error) {
 		DefaultMaxRedirects:   envInt("DEFAULT_MAX_REDIRECTS", 5),
 		HardMaxRedirects:      envInt("HARD_MAX_REDIRECTS", 10),
 		MaxConcurrency:        envInt("MAX_CONCURRENCY", 100),
+		ProxyListenAddr:       envString("PROXY_LISTEN_ADDR", "0.0.0.0:8081"),
+		ProxyMaxConcurrency:   envInt("PROXY_MAX_CONCURRENCY", 50),
+		ProxyMaxStreamBytes:   envInt64("PROXY_MAX_STREAM_BYTES", 100<<20),
+		PublicPathPrefix:      normalizePublicPathPrefix(strings.TrimSpace(os.Getenv("PUBLIC_PATH_PREFIX"))),
 	}
 	if cfg.DefaultTimeout <= 0 || cfg.DefaultTimeout > cfg.MaxTimeout {
 		return config{}, errors.New("DEFAULT_TIMEOUT_MS must be positive and no greater than MAX_TIMEOUT_MS")
@@ -611,6 +644,28 @@ func loadConfig() (config, error) {
 	}
 	if cfg.MaxConcurrency <= 0 {
 		return config{}, errors.New("MAX_CONCURRENCY must be positive")
+	}
+	if cfg.ProxyMaxConcurrency <= 0 {
+		return config{}, errors.New("PROXY_MAX_CONCURRENCY must be positive")
+	}
+	if cfg.ProxyMaxStreamBytes < 0 {
+		return config{}, errors.New("PROXY_MAX_STREAM_BYTES must not be negative")
+	}
+	if raw := strings.TrimSpace(os.Getenv("ALLOWED_UPSTREAM_HOSTS")); raw != "" {
+		for _, value := range strings.Split(raw, ",") {
+			entry := strings.ToLower(strings.TrimSpace(value))
+			host, port, hasPort := strings.Cut(entry, ":")
+			if host == "" || strings.ContainsAny(host, ":/?#@ ") {
+				return config{}, fmt.Errorf("invalid ALLOWED_UPSTREAM_HOSTS entry %q: expected a hostname such as mcp-server.comein.cn, optionally with :port", value)
+			}
+			if hasPort {
+				portNum, convErr := strconv.Atoi(port)
+				if convErr != nil || portNum < 1 || portNum > 65535 {
+					return config{}, fmt.Errorf("invalid ALLOWED_UPSTREAM_HOSTS entry %q: port must be between 1 and 65535", value)
+				}
+			}
+			cfg.AllowedUpstreamHosts = append(cfg.AllowedUpstreamHosts, entry)
+		}
 	}
 	if raw := strings.TrimSpace(os.Getenv("BLOCKED_CIDRS")); raw != "" {
 		for _, value := range strings.Split(raw, ",") {
@@ -622,6 +677,16 @@ func loadConfig() (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func normalizePublicPathPrefix(value string) string {
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	return strings.TrimSuffix(value, "/")
 }
 
 func loadSecret(valueEnv, fileEnv string) (string, error) {

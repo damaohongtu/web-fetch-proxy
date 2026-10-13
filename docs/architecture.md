@@ -252,4 +252,129 @@ Worker 会拒绝回环、私网、链路本地、CGNAT、多播、保留地址�
 | 云端统一控制 | `scripts/cloudctl.sh` | `cloudctl.sh start` 明确启动上述两个服务 |
 | 宿主机日志 | `var/log/nginx/`、`var/log/fetch-worker/` | Compose 绑定挂载，systemd 每日轮转并保留 7 天 |
 | 内部测试实现 | `examples/internal-web-fetch/internal_web_fetch.py` | Python 标准库直接运行 |
+| 网关模拟器与 MCP 端到端测试 | `examples/ia-access-gateway/` | Python 标准库直接运行 |
 | 运行时身份 | `var/pki/`、`var/secrets/` | `cloudctl.sh init` 生成，不入 Git |
+
+## 7. MCP 透明代理模式
+
+### 7.1 目标与链路
+
+企业内部生产服务器需要访问外部 MCP 服务器（如 `https://mcp-server.comein.cn/mcp-servers/institutioncenter`），
+但所有外部流量必须经内部网关（`https://ia-api.cmfcha.com`，固定前缀 `/ia-access-gateway/mcp/`）收敛到云端，
+使防火墙只需开通"网关 → 云服务器"一条规则：
+
+```mermaid
+flowchart LR
+    subgraph PROD["生产服务器（无外网）"]
+        MCP_CLIENT["MCP 客户端<br/>streamable-http"]
+    end
+    subgraph ENT["企业网络"]
+        GW["ia-access-gateway<br/>https://ia-api.cmfcha.com<br/>固定前缀 /ia-access-gateway/mcp/<br/>持有 mTLS 客户端证书与 Bearer Token"]
+    end
+    subgraph CLOUD2["云服务器 web-fetch-proxy"]
+        NGINX2["Nginx /v1/proxy/<br/>不缓冲、3600s 读超时"]
+        WORKER2["Worker :8081<br/>x-mcp-host 路由<br/>allowlist + SSRF 防护"]
+    end
+    UPSTREAM["外部 MCP 服务器<br/>mcp-server.comein.cn"]
+
+    MCP_CLIENT -->|"GET/POST/DELETE<br/>x-mcp-host + x-user-id"| GW
+    GW -->|"HTTPS + mTLS + Bearer<br/>/v1/proxy/<path>"| NGINX2
+    NGINX2 --> WORKER2
+    WORKER2 -->|"透明转发（非信封）"| UPSTREAM
+    UPSTREAM -.->|"SSE 流式回传<br/>逐字节透传"| MCP_CLIENT
+```
+
+`/v1/fetch`（JSON 信封模式）保持零改动。代理模式是独立的第二个监听端口 `:8081`，
+因为现有 8080 server 的 `WriteTimeout=MaxTimeout+10s` 会掐死 SSE 长连接；代理 server
+不设写超时，空闲流由 Nginx `proxy_read_timeout 3600s` 掐断。
+
+### 7.2 x-mcp-host 路由约定
+
+- 客户端在请求头 **`x-mcp-host`** 中指定真正代理的外部 MCP 服务器 origin
+  （如 `https://mcp-server.comein.cn`；裸域名默认 https）
+- 公共路径前缀之后的部分原样映射：`<网关>/ia-access-gateway/mcp/<path>` → `<上游>/<path>`
+- Worker 消费该头后剥离，**绝不转发给上游**
+- 上游必须命中云端 allowlist（`ALLOWED_UPSTREAM_HOSTS`，逗号分隔；条目为裸域名
+  `mcp-server.comein.cn` 或 `host:port`）。裸域名条目只放行 80/443 端口；
+  allowlist 为空 = 代理功能整体关闭（fail-closed）
+
+### 7.3 头部策略
+
+| 请求头 | 处理 |
+|---|---|
+| `Authorization`（客户端发出） | 上游凭证，由**网关改名为 `X-Upstream-Authorization`** 后交给云端；客户端配置与直连供应商时完全一致 |
+| `Authorization`（云端收到） | 网关注入的云端 Bearer Token，Worker 校验后剥离、绝不转发上游 |
+| `X-Upstream-Authorization` | Worker 映射为转发上游时的 `Authorization`（客户端显式提供时优先于改名） |
+| `x-user-id`、`Mcp-Session-Id`、`MCP-Protocol-Version`、`Last-Event-ID`、`Accept`、`Content-Type` | 原样透传 |
+| `X-Request-ID`、`X-Client-IP`、`X-Client-Cert-Subject`、`X-Forwarded-For` | 到达 Worker 后剥离 |
+
+响应方向：上游状态码、`Mcp-Session-Id` 等响应头与正文逐字节透传（非信封），
+`FlushInterval: -1` 保证 SSE 每写即刷。上游 3xx 的 `Location` 在配置
+`PUBLIC_PATH_PREFIX`（如 `/ia-access-gateway/mcp`）时改写为带前缀路径，
+解决 FastAPI 系尾斜杠 307 重定向丢前缀问题；跨主机重定向原样透传并告警。
+
+### 7.4 内部网关（ia-access-gateway）配置清单
+
+网关团队按下表配置，任何一项缺失都会破坏 streamable-http 传输：
+
+| # | 项目 | 要求 |
+|---:|---|---|
+| 1 | 前缀改写 | `/ia-access-gateway/mcp/<path>` → 云端 `/v1/proxy/<path>` |
+| 2 | 方法白名单 | 允许 GET、POST、DELETE |
+| 3 | 流式透传 | 响应逐块转发、关闭响应缓冲（SSE 必需） |
+| 4 | 读超时 | 长连接读超时 ≥ 3600s（不能沿用普通 API 的几十秒） |
+| 5 | 头部透传 | `x-mcp-host`、`x-user-id`、`Mcp-Session-Id`、`MCP-Protocol-Version`、`Last-Event-ID`、`Accept`、`Content-Type`（`Authorization` 按 8 改写，不透传） |
+| 6 | 不压缩 | 关闭 gzip/brotli（压缩会攒缓冲破坏流式） |
+| 7 | 不缓存、不重试、不拦截错误页 | 3xx/4xx/5xx 原样透传，失败不自动重发 POST |
+| 8 | 凭证改写与注入 | 客户端 `Authorization` 改名为 `X-Upstream-Authorization`（供应商配置原样可用），再注入云端 Bearer Token 与 mTLS 客户端证书；生产服务器不落云端凭证 |
+| 9 | 限流口径 | 客户端是网关单 IP，云端的代理限流（100r/s、并发 200）已按聚合流量放宽，网关侧自行按用户维度限流 |
+
+### 7.5 安全边界（代理模式增量）
+
+在 `/v1/fetch` 已有边界之上：
+
+1. 上游 allowlist fail-closed：未配置 `ALLOWED_UPSTREAM_HOSTS` 时代理路由整体 403。
+2. `x-mcp-host` 仅接受 http/https origin，禁止 userinfo、路径、查询与 scheme 之外的一切内容。
+3. 出站连接复用 safeDialer：DNS 解析 → IP 校验（私网/回环/元数据/保留段拒绝）→ 用已验证 IP 建连，防 DNS 重绑定。
+4. 代理请求体上限 64 KiB；响应流总量上限 `PROXY_MAX_STREAM_BYTES`（默认 100 MiB，超限断流并告警）。
+5. 代理并发独立信号量 `PROXY_MAX_CONCURRENCY`（默认 50），占满返回 429，不影响 `/v1/fetch`。
+
+### 7.6 错误码（代理模式）
+
+| HTTP | 错误码 | 含义 |
+|---:|---|---|
+| 400 | `INVALID_REQUEST` | 缺 `x-mcp-host`、头值不合法或请求体超限 |
+| 401 | `UNAUTHORIZED` | 云端 Bearer Token 缺失或错误 |
+| 403 | `UPSTREAM_NOT_ALLOWED` | 上游不在 `ALLOWED_UPSTREAM_HOSTS`（含 allowlist 为空） |
+| 403 | `DESTINATION_BLOCKED` | 上游地址被 SSRF 策略阻止 |
+| 405 | `METHOD_NOT_ALLOWED` | 非 GET/POST/DELETE |
+| 429 | `TOO_MANY_REQUESTS` | 代理并发达到上限 |
+| 502/504 | `DNS_FAILED` / `CONNECT_FAILED` / `TLS_FAILED` / `FETCH_TIMEOUT` | 上游网络失败 |
+
+### 7.7 MCP 客户端配置
+
+生产服务器上（经真实网关）：
+
+```json
+{
+  "institutioncenter": {
+    "url": "https://ia-api.cmfcha.com/ia-access-gateway/mcp/mcp-servers/institutioncenter",
+    "type": "streamable-http",
+    "headers": {
+      "x-mcp-host": "https://mcp-server.comein.cn",
+      "x-user-id": "<comein 业务用户ID>"
+    }
+  }
+}
+```
+
+本地联调见 `examples/ia-access-gateway/README.md`（网关模拟器 + 端到端测试脚本）。
+
+### 7.8 启用流程
+
+1. 云端 `.env` 设置 `ALLOWED_UPSTREAM_HOSTS=mcp-server.comein.cn`（按需追加 `host:port` 条目）
+2. 网关使用公共前缀时同步设置 `PUBLIC_PATH_PREFIX=/ia-access-gateway/mcp`
+3. `./scripts/cloudctl.sh restart`
+4. `./scripts/cloudctl.sh verify` 跑通含 MCP 代理的 8 步验收
+5. 网关团队按 7.4 清单配置后，用 `examples/ia-access-gateway/mcp_client_test.py`
+   （改 `GATEWAY_HOST`/`GATEWAY_PORT` 指向真实网关）做生产联调

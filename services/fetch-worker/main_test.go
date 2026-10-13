@@ -23,6 +23,7 @@ func testConfig() config {
 		ConnectTimeout: time.Second, ResponseHeaderTimeout: time.Second,
 		DefaultMaxBytes: 1024, HardMaxBytes: 2048,
 		DefaultMaxRedirects: 2, HardMaxRedirects: 5, MaxConcurrency: 2,
+		ProxyListenAddr: "127.0.0.1:0", ProxyMaxConcurrency: 2, ProxyMaxStreamBytes: 4096,
 	}
 }
 

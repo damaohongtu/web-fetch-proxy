@@ -1,6 +1,7 @@
 # Web Fetch Proxy
 
-为不能直接访问互联网的内部 Web-Fetch 提供一个经过 mTLS 保护的云端出口。
+为不能直接访问互联网的内部 Web-Fetch 提供一个经过 mTLS 保护的云端出口；
+同时提供 MCP（streamable-http）透明代理模式，让生产服务器经内部网关安全访问外部 MCP 服务器。
 
 ```mermaid
 flowchart LR
@@ -8,6 +9,9 @@ flowchart LR
     I -->|"公网 IP:443<br/>mTLS + Bearer Token"| N["云端 Nginx"]
     N -->|"backend 私有网络 :8080"| W["Fetch Worker"]
     W -->|"校验 DNS/IP 后访问"| T["外部 HTTP/HTTPS 网站"]
+    M["MCP 客户端<br/>（生产服务器）"] --> G["ia-access-gateway<br/>（企业内部网关）"]
+    G -->|"公网 IP:443<br/>/v1/proxy/ + x-mcp-host"| N
+    W2["Fetch Worker :8081<br/>透明代理"] -->|"allowlist + SSRF 防护"| U["外部 MCP 服务器<br/>（SSE 流式回传）"]
 ```
 
 不需要域名。服务端证书使用云服务器公网 IPv4 的 IP SAN。
@@ -94,7 +98,8 @@ sudo ./scripts/cleanup-logs.sh 7
 ├── deploy/
 │   └── nginx/templates/                 Nginx mTLS 网关模板
 ├── examples/
-│   └── internal-web-fetch/              Python 内部 Web-Fetch 示例
+│   ├── internal-web-fetch/              Python 内部 Web-Fetch 示例
+│   └── ia-access-gateway/               网关模拟器与 MCP 端到端测试
 ├── scripts/
 │   ├── cloudctl.sh                      初始化、启停、状态、日志、验收、客户端导出
 │   ├── generate-mtls.sh                 PKI 和 Token 的初始化/独立轮换
