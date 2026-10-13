@@ -47,8 +47,8 @@ python3 examples/ia-access-gateway/mcp_client_test.py
 1. **前缀改写**：`/ia-access-gateway/mcp/<path>` → 云端 `/v1/proxy/<path>`
 2. **凭证改写**：客户端 `Authorization`（上游凭证）改名为 `X-Upstream-Authorization`；
    注入云端 Bearer Token 与 mTLS 客户端证书（网关是证书持有方）
-3. **协议头透传**：`x-mcp-host`、`x-user-id`、`X-Upstream-Authorization`、
-   `Mcp-Session-Id`、`MCP-Protocol-Version`、`Last-Event-ID`、`Accept`、`Content-Type`
+3. **头部原封不动透传**：除网关自管头（逐跳头、`Host`、`Authorization` 凭证改写）
+   外，一切请求头（含供应商自定义头如 `X-Api-Key`）与响应头（除逐跳头）原样转发
 4. **流式转发**：响应逐块转发、每块即刷——SSE 不缓冲
 5. **方法白名单**：仅 GET/POST/DELETE（streamable-http 传输所需）
 6. **不缓存、不压缩、不重试、不拦截错误页**

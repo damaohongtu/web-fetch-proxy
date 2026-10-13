@@ -91,11 +91,12 @@ type securityError struct{ message string }
 func (e *securityError) Error() string { return e.message }
 
 type server struct {
-	cfg       config
-	transport *http.Transport
-	sem       chan struct{}
-	proxySem  chan struct{}
-	logger    *slog.Logger
+	cfg            config
+	transport      *http.Transport
+	proxyTransport *http.Transport
+	sem            chan struct{}
+	proxySem       chan struct{}
+	logger         *slog.Logger
 }
 
 var allowedRequestHeaders = map[string]struct{}{
@@ -222,11 +223,12 @@ func newServerWithLogger(cfg config, logger *slog.Logger) *server {
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	return &server{
-		cfg:       cfg,
-		transport: transport,
-		sem:       make(chan struct{}, cfg.MaxConcurrency),
-		proxySem:  make(chan struct{}, cfg.ProxyMaxConcurrency),
-		logger:    logger,
+		cfg:            cfg,
+		transport:      transport,
+		proxyTransport: newProxyTransport(transport),
+		sem:            make(chan struct{}, cfg.MaxConcurrency),
+		proxySem:       make(chan struct{}, cfg.ProxyMaxConcurrency),
+		logger:         logger,
 	}
 }
 

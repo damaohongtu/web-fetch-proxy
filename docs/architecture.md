@@ -305,10 +305,12 @@ flowchart LR
 | `Authorization`（客户端发出） | 上游凭证，由**网关改名为 `X-Upstream-Authorization`** 后交给云端；客户端配置与直连供应商时完全一致 |
 | `Authorization`（云端收到） | 网关注入的云端 Bearer Token，Worker 校验后剥离、绝不转发上游 |
 | `X-Upstream-Authorization` | Worker 映射为转发上游时的 `Authorization`（客户端显式提供时优先于改名） |
-| `x-user-id`、`Mcp-Session-Id`、`MCP-Protocol-Version`、`Last-Event-ID`、`Accept`、`Content-Type` | 原样透传 |
+| 其余一切请求头 | **原样透传**（含 `x-user-id`、`Mcp-Session-Id`、`MCP-Protocol-Version`、`Last-Event-ID`、`Accept`、`Content-Type`、`User-Agent` 及供应商自定义头如 `X-Api-Key`） |
 | `X-Request-ID`、`X-Client-IP`、`X-Client-Cert-Subject`、`X-Forwarded-For` | 到达 Worker 后剥离 |
 
-响应方向：上游状态码、`Mcp-Session-Id` 等响应头与正文逐字节透传（非信封），
+响应方向：上游状态码、全部响应头（除逐跳头）与正文逐字节透传（非信封），
+Worker 的代理 Transport 已关闭自动 gzip——客户端没发 `Accept-Encoding` 时不会
+代为注入，上游压缩的响应也原样回传、不做透明解压。
 `FlushInterval: -1` 保证 SSE 每写即刷。上游 3xx 的 `Location` 在配置
 `PUBLIC_PATH_PREFIX`（如 `/ia-access-gateway/mcp`）时改写为带前缀路径，
 解决 FastAPI 系尾斜杠 307 重定向丢前缀问题；跨主机重定向原样透传并告警。
@@ -323,7 +325,7 @@ flowchart LR
 | 2 | 方法白名单 | 允许 GET、POST、DELETE |
 | 3 | 流式透传 | 响应逐块转发、关闭响应缓冲（SSE 必需） |
 | 4 | 读超时 | 长连接读超时 ≥ 3600s（不能沿用普通 API 的几十秒） |
-| 5 | 头部透传 | `x-mcp-host`、`x-user-id`、`Mcp-Session-Id`、`MCP-Protocol-Version`、`Last-Event-ID`、`Accept`、`Content-Type`（`Authorization` 按 8 改写，不透传） |
+| 5 | 头部透传 | **默认透传所有请求头**（含供应商自定义头如 `X-Api-Key`），仅排除逐跳头、`Host`（改为云端地址）与 `Authorization`（按第 8 项改写）。禁止实现白名单式头部过滤，否则供应商私有头会被丢弃 |
 | 6 | 不压缩 | 关闭 gzip/brotli（压缩会攒缓冲破坏流式） |
 | 7 | 不缓存、不重试、不拦截错误页 | 3xx/4xx/5xx 原样透传，失败不自动重发 POST |
 | 8 | 凭证改写与注入 | 客户端 `Authorization` 改名为 `X-Upstream-Authorization`（供应商配置原样可用），再注入云端 Bearer Token 与 mTLS 客户端证书；生产服务器不落云端凭证 |

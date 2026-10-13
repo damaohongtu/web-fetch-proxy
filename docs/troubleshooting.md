@@ -43,6 +43,7 @@ tail -f var/log/fetch-worker/worker.log
 | MCP 代理 400 `INVALID_REQUEST` | 缺 `x-mcp-host` 头，或值含路径/查询/userinfo | 客户端配置改为 origin 形式，如 `https://mcp-server.comein.cn` |
 | MCP 代理 401 `UNAUTHORIZED` | 云端 Bearer Token 缺失或错误（网关未注入） | 网关注入云端 Token；供应商自己的 Token 走 `Authorization`，由网关改名透传，不受此项影响 |
 | 上游返回 401 | 网关未把客户端 `Authorization` 改名为 `X-Upstream-Authorization`（改写规则见架构文档 7.4），或上游 Token 失效 | 网关实现凭证改写规则；确认供应商 Token 有效 |
+| 供应商自定义头未到达上游 | 网关实现了白名单式头部过滤，只透传枚举出的协议头 | 改为默认透传：仅排除逐跳头、`Host`、`Authorization`（见架构文档 7.3/7.4） |
 | MCP 429 `TOO_MANY_REQUESTS` | 代理并发达到 `PROXY_MAX_CONCURRENCY` | 网关侧按用户维度收敛并发，或云端提高上限 |
 | SSE 流中途断开 | 某一跳缓冲或短超时掐流 | 见下节"SSE 断流排查" |
 | MCP 客户端 307 重定向后 404 | 上游尾斜杠重定向丢了公共前缀 | 云端设置 `PUBLIC_PATH_PREFIX` 并重启；确认网关透传 `Location` |

@@ -13,8 +13,8 @@
   - 剥离公共前缀 /ia-access-gateway/mcp，改写为云端 /v1/proxy
   - 凭证改写：客户端 Authorization（上游凭证）改名为 X-Upstream-Authorization，
     注入云端 Bearer Token 与 mTLS 客户端证书（网关是证书持有方）
-  - 原样透传 MCP 协议头：x-mcp-host / x-user-id / Mcp-Session-Id /
-    MCP-Protocol-Version / Last-Event-ID / Accept / Content-Type
+  - 头部原封不动透传：除网关自管头（逐跳头、Host、凭证改写）外，
+    一切请求头（含供应商自定义头）与响应头（除逐跳头）原样转发
   - 不缓冲、不压缩、不缓存、不重试、不拦截错误页——SSE 逐块转发
 
 仅用 Python 3 标准库。用法：
@@ -43,22 +43,23 @@ CLIENT_CERT = os.path.join(REPO_ROOT, "var", "pki", "client.crt")
 CLIENT_KEY = os.path.join(REPO_ROOT, "var", "pki", "client.key")
 TOKEN_FILE = os.path.join(REPO_ROOT, "var", "secrets", "fetch_auth_token")
 
-# 请求方向：MCP 客户端 → 云端需要透传的协议头（小写比较）。
-# Authorization 不在透传之列：客户端的 Authorization 是发给上游的凭证，
-# 由网关改名为 X-Upstream-Authorization（见 _proxy 中的改写规则）。
-PASSTHROUGH_REQUEST_HEADERS = {
-    "x-mcp-host",
-    "x-user-id",
-    "mcp-session-id",
-    "mcp-protocol-version",
-    "last-event-id",
-    "accept",
-    "content-type",
+# 请求方向：网关不透传的头（小写比较）——仅逐跳头（RFC 9110 §7.6.1）和网关
+# 自管头。其余一切请求头（含供应商自定义头，如 X-Api-Key）原封不动透传，
+# 绝不能实现白名单式过滤，否则供应商私有头会被丢弃。
+GATEWAY_MANAGED_REQUEST_HEADERS = {
+    "host",                     # 网关改为云端地址
+    "content-length",           # 按实际读取的正文重新发送（见 _proxy）
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade",  # 逐跳头
+    "authorization",            # 上游凭证：改名 X-Upstream-Authorization 后透传
+    "x-upstream-authorization",  # 网关凭证改写专用头
 }
-# 响应方向：云端 → MCP 客户端需要透传的协议头。
-PASSTHROUGH_RESPONSE_HEADERS = {
-    "mcp-session-id",
-    "content-type",
+# 响应方向：仅排除逐跳头，其余（content-encoding、mcp-session-id、
+# cache-control 等）原样透传给 MCP 客户端。
+GATEWAY_MANAGED_RESPONSE_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade",
+    "content-length",           # 流式转发由连接关闭界定正文边界
 }
 
 ALLOWED_METHODS = ("GET", "POST", "DELETE")
@@ -101,31 +102,39 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if length > 0:
             body = self.rfile.read(length)
 
-        headers = {
-            name: value
-            for name, value in self.headers.items()
-            if name.lower() in PASSTHROUGH_REQUEST_HEADERS
-        }
-        # 凭证改写规则（真实网关必须实现同样的规则）：
-        #   MCP 客户端的 Authorization 是发给上游的凭证（供应商配置原样使用），
-        #   网关把它改名为 X-Upstream-Authorization，由云端 Worker 映射回
-        #   转发上游时的 Authorization；随后网关注入云端自己的 Bearer Token。
-        #   显式提供 X-Upstream-Authorization 时以它为准（优先级高于改名）。
-        upstream_credentials = self.headers.get("X-Upstream-Authorization") \
-            or self.headers.get("Authorization")
-        if upstream_credentials:
-            headers["X-Upstream-Authorization"] = upstream_credentials
-        headers["Authorization"] = "Bearer " + self.token
-
         conn = http.client.HTTPSConnection(
             CLOUD_HOST, CLOUD_PORT, context=self.tls_context, timeout=3600
         )
         try:
-            conn.request(self.command, "/v1/proxy" + suffix, body=body, headers=headers)
+            # 逐头转发：除网关自管头外原封不动（保留重复头与原始大小写）；
+            # skip_host/skip_accept_encoding 避免注入客户端没发的头。
+            conn.putrequest(self.command, "/v1/proxy" + suffix,
+                            skip_host=True, skip_accept_encoding=True)
+            conn.putheader("Host", CLOUD_HOST if CLOUD_PORT == 443
+                           else "%s:%d" % (CLOUD_HOST, CLOUD_PORT))
+            for name, value in self.headers.items():
+                if name.lower() in GATEWAY_MANAGED_REQUEST_HEADERS:
+                    continue
+                conn.putheader(name, value)
+            content_length = self.headers.get("Content-Length")
+            if content_length is not None:
+                conn.putheader("Content-Length", content_length)
+            # 凭证改写规则（真实网关必须实现同样的规则）：
+            #   MCP 客户端的 Authorization 是发给上游的凭证（供应商配置原样使用），
+            #   网关把它改名为 X-Upstream-Authorization，由云端 Worker 映射回
+            #   转发上游时的 Authorization；随后网关注入云端自己的 Bearer Token。
+            #   显式提供 X-Upstream-Authorization 时以它为准（优先级高于改名）。
+            upstream_credentials = self.headers.get("X-Upstream-Authorization") \
+                or self.headers.get("Authorization")
+            if upstream_credentials:
+                conn.putheader("X-Upstream-Authorization", upstream_credentials)
+            conn.putheader("Authorization", "Bearer " + self.token)
+            conn.endheaders(body)
             response = conn.getresponse()
-            self.send_response(response.status)
+            self.log_request(response.status)
+            self.send_response_only(response.status)
             for name, value in response.getheaders():
-                if name.lower() in PASSTHROUGH_RESPONSE_HEADERS:
+                if name.lower() not in GATEWAY_MANAGED_RESPONSE_HEADERS:
                     self.send_header(name, value)
             self.end_headers()
             # 逐块转发并立即刷新：SSE 不缓冲。

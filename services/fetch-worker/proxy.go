@@ -175,6 +175,16 @@ func parseUpstreamOrigin(value string) (*url.URL, error) {
 	return origin, nil
 }
 
+// newProxyTransport clones the fetch transport with transparent gzip
+// disabled: net/http otherwise injects "Accept-Encoding: gzip" when the
+// client sent none and silently decompresses the response, both of which
+// violate the verbatim passthrough this route promises.
+func newProxyTransport(base *http.Transport) *http.Transport {
+	clone := base.Clone()
+	clone.DisableCompression = true
+	return clone
+}
+
 func (s *server) newReverseProxy(target *url.URL, requestID string) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -193,7 +203,7 @@ func (s *server) newReverseProxy(target *url.URL, requestID string) *httputil.Re
 				pr.Out.Header.Set("Authorization", credentials)
 			}
 		},
-		Transport:     s.transport,
+		Transport:     s.proxyTransport,
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
 			s.rewriteUpstreamRedirect(resp, target, requestID)

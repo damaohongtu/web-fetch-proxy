@@ -17,12 +17,14 @@ import (
 // newLoopbackProxyServer builds a server whose transport skips the safe
 // dialer, so tests can proxy to httptest servers listening on loopback.
 func newLoopbackProxyServer(cfg config) *server {
+	fetchTransport := &http.Transport{}
 	return &server{
-		cfg:       cfg,
-		transport: &http.Transport{},
-		sem:       make(chan struct{}, cfg.MaxConcurrency),
-		proxySem:  make(chan struct{}, cfg.ProxyMaxConcurrency),
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:            cfg,
+		transport:      fetchTransport,
+		proxyTransport: newProxyTransport(fetchTransport),
+		sem:            make(chan struct{}, cfg.MaxConcurrency),
+		proxySem:       make(chan struct{}, cfg.ProxyMaxConcurrency),
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
@@ -246,6 +248,14 @@ var noRedirectClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
+// rawHeaderClient additionally suppresses the transport's automatic
+// "Accept-Encoding: gzip", so tests can assert the proxy forwards that
+// header exactly as the caller wrote it — or not at all.
+var rawHeaderClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	Transport:     &http.Transport{DisableCompression: true},
+}
+
 func proxyClientRequest(t *testing.T, method, downstreamURL, upstreamOrigin, path string, body io.Reader) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, downstreamURL+path, body)
@@ -308,6 +318,43 @@ func TestProxyHeaderPolicy(t *testing.T) {
 	upstreamHost := strings.TrimPrefix(strings.TrimPrefix(origin, "https://"), "http://")
 	if receivedHost != upstreamHost {
 		t.Errorf("Host = %q, want upstream host %q", receivedHost, upstreamHost)
+	}
+}
+
+func TestProxyAcceptEncodingPassthrough(t *testing.T) {
+	tests := []struct {
+		name         string
+		clientHeader string
+		wantSeen     string
+	}{
+		{"client omitted Accept-Encoding, upstream must not see one", "", ""},
+		{"client value forwarded verbatim", "gzip, br", "gzip, br"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var seen string
+			downstream, origin := startProxyPair(t, proxyTestConfig(), func(w http.ResponseWriter, r *http.Request) {
+				seen = r.Header.Get("Accept-Encoding")
+				w.WriteHeader(http.StatusOK)
+			})
+			req, err := http.NewRequest(http.MethodPost, downstream.URL+"/v1/proxy/servers/x", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
+			req.Header.Set(upstreamHostHeader, origin)
+			if tt.clientHeader != "" {
+				req.Header.Set("Accept-Encoding", tt.clientHeader)
+			}
+			res, err := rawHeaderClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if seen != tt.wantSeen {
+				t.Errorf("upstream Accept-Encoding = %q, want %q", seen, tt.wantSeen)
+			}
+		})
 	}
 }
 
