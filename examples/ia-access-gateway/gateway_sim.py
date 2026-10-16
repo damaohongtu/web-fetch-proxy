@@ -16,6 +16,10 @@
   - 头部原封不动透传：除网关自管头（逐跳头、Host、凭证改写）外，
     一切请求头（含供应商自定义头）与响应头（除逐跳头）原样转发
   - 不缓冲、不压缩、不缓存、不重试、不拦截错误页——SSE 逐块转发
+  - 尾斜杠 3xx 跟随：Location 剥公共前缀后恰为"当前路径 + /"的 301/302/307/308
+    在网关内部跟随（请求体与凭证重放，最多 3 次），兼容上游平台/前置 LB 剥尾斜杠
+    且客户端不跟随重定向；外部 Location 原样透传。
+    FOLLOW_SLASH_REDIRECTS=0 可关闭（默认开）
 
 仅用 Python 3 标准库。用法：
 
@@ -64,6 +68,15 @@ GATEWAY_MANAGED_RESPONSE_HEADERS = {
 
 ALLOWED_METHODS = ("GET", "POST", "DELETE")
 
+# 尾斜杠重定向跟随（与 ia-access-gateway McpProxyService 方案一致）：
+# 上游 MCP 平台/前置 LB 常剥掉 URL 尾斜杠，FastAPI 型上游返回 3xx 要求补回，
+# 而客户端不跟随重定向 → 网关代为跟随。仅"自家前缀 + 当前路径 + /"的
+# 301/302/307/308 才跟随；外部 Location 原样透传，凭证不会发给第三方。
+FOLLOW_SLASH_REDIRECTS = os.environ.get("FOLLOW_SLASH_REDIRECTS", "1") \
+    not in ("0", "false", "no", "")
+MAX_REDIRECT_FOLLOWS = 3
+REDIRECT_STATUSES = (301, 302, 307, 308)
+
 
 def build_tls_context():
     context = ssl.create_default_context(cafile=CA_CERT)
@@ -102,6 +115,50 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if length > 0:
             body = self.rfile.read(length)
 
+        conn = None
+        try:
+            follows = 0
+            while True:
+                conn, response = self._cloud_request(suffix, body)
+                target = None
+                if FOLLOW_SLASH_REDIRECTS and follows < MAX_REDIRECT_FOLLOWS:
+                    target = self._slash_redirect_target(
+                        suffix, response.status, response.getheader("Location"))
+                if target is None:
+                    break
+                response.read()  # 排空 3xx 响应体
+                conn.close()
+                self.log_message(
+                    "following trailing-slash redirect: %s -> %s (follow %d/%d)",
+                    suffix, target, follows + 1, MAX_REDIRECT_FOLLOWS)
+                suffix = target
+                follows += 1
+
+            self.log_request(response.status)
+            self.send_response_only(response.status)
+            for name, value in response.getheaders():
+                if name.lower() not in GATEWAY_MANAGED_RESPONSE_HEADERS:
+                    self.send_header(name, value)
+            self.end_headers()
+            # 逐块转发并立即刷新：SSE 不缓冲。
+            while True:
+                chunk = response.read(4096)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except Exception as error:  # noqa: BLE001 - 网关把上游故障原样报告给客户端
+            self.log_error("upstream failure: %s", error)
+            try:
+                self.send_error(502, "cloud web-fetch-proxy unreachable")
+            except Exception:  # noqa: BLE001 - 响应头可能已部分发出
+                pass
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _cloud_request(self, suffix, body):
+        """向云端发一次请求，返回 (conn, response)；调用方负责读取/关闭。"""
         conn = http.client.HTTPSConnection(
             CLOUD_HOST, CLOUD_PORT, context=self.tls_context, timeout=3600
         )
@@ -130,28 +187,32 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 conn.putheader("X-Upstream-Authorization", upstream_credentials)
             conn.putheader("Authorization", "Bearer " + self.token)
             conn.endheaders(body)
-            response = conn.getresponse()
-            self.log_request(response.status)
-            self.send_response_only(response.status)
-            for name, value in response.getheaders():
-                if name.lower() not in GATEWAY_MANAGED_RESPONSE_HEADERS:
-                    self.send_header(name, value)
-            self.end_headers()
-            # 逐块转发并立即刷新：SSE 不缓冲。
-            while True:
-                chunk = response.read(4096)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
-        except Exception as error:  # noqa: BLE001 - 网关把上游故障原样报告给客户端
-            self.log_error("upstream failure: %s", error)
-            try:
-                self.send_error(502, "cloud web-fetch-proxy unreachable")
-            except Exception:  # noqa: BLE001 - 响应头可能已部分发出
-                pass
-        finally:
+            return conn, conn.getresponse()
+        except Exception:
             conn.close()
+            raise
+
+    @staticmethod
+    def _slash_redirect_target(suffix, status, location):
+        """判定是否为可跟随的尾斜杠重定向。
+
+        Location（剥 /ia-access-gateway/mcp 前缀后）恰为"当前路径 + /"时返回
+        重组后的目标 suffix（query 取 Location 携带值，否则保留原值），否则 None。
+        """
+        if status not in REDIRECT_STATUSES or not location:
+            return None
+        path, _, query = suffix.partition("?")
+        location_path, _, location_query = location.partition("?")
+        if not location_path.startswith(GATEWAY_PREFIX + "/"):
+            return None
+        stripped = location_path[len(GATEWAY_PREFIX):]
+        if stripped != path + "/":
+            return None
+        if location_query:
+            return stripped + "?" + location_query
+        if query:
+            return stripped + "?" + query
+        return stripped
 
     do_GET = _proxy
     do_POST = _proxy
