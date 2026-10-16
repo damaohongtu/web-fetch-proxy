@@ -89,7 +89,7 @@ issue_server() {
 
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "${key_new}"
   openssl req -new -sha256 -key "${key_new}" -subj "/CN=${public_ip}" -out "${csr_new}"
-  openssl x509 -req -sha256 -days 397 \
+  openssl x509 -req -sha256 -days 3650 \
     -in "${csr_new}" \
     -CA "${pki_dir}/ca.crt" \
     -CAkey "${pki_dir}/ca.key" \
@@ -118,7 +118,7 @@ issue_client() {
 
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "${key_new}"
   openssl req -new -sha256 -key "${key_new}" -subj "/CN=${client_name}" -out "${csr_new}"
-  openssl x509 -req -sha256 -days 397 \
+  openssl x509 -req -sha256 -days 3650 \
     -in "${csr_new}" \
     -CA "${pki_dir}/ca.crt" \
     -CAkey "${pki_dir}/ca.key" \
